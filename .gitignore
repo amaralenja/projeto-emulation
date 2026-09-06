@@ -1,0 +1,12 @@
+# APKs do Minute ficam de fora: app de terceiros, e a instalacao boa e pela
+# Play Store de qualquer jeito (sideload nao passa no PAIRIP). Sao so backup.
+apk/
+
+# artefatos de build
+lentes/build/
+lentes/*.idsig
+__pycache__/
+*.pyc
+
+# capturas temporarias
+/camvideo/*.png

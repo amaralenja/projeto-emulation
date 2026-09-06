@@ -1,0 +1,6 @@
+id=uwcam
+name=Emulator Ultra-Wide Back Camera
+version=v1.0
+versionCode=1
+author=local
+description=Troca a traseira do emulador por uma multi-camera logica com fisica ultra-wide (FOV 119 graus). Necessario para o Minute liberar a gravacao.
