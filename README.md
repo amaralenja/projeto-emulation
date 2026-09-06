@@ -34,10 +34,24 @@ do celular ao vivo.
 
 Precisa só de **Git** e **PowerShell** (já vem no Windows). Os scripts baixam o resto.
 
-O `01-ferramentas.ps1` pergunta se você quer OBS e ffmpeg. Eles só fazem falta
-para **câmera do celular ao vivo** ou **vídeo sobreposto**. Para vídeo simples o
-emulador toca o arquivo sozinho (`-camera-back videofile:...`) e você não precisa
-de nada disso. DroidCam e Iriun não estão no winget — o script mostra os links.
+O `01-ferramentas.ps1` instala tudo pelo winget:
+
+| Programa | Para quê |
+|---|---|
+| JDK 21 + Python 3.12 | rodar o SDK e o `camvideo.py` |
+| SDK do Android | emulador, adb, build-tools |
+| OBS Studio | compor câmera ao vivo + vídeo |
+| **DroidCam Client** | traz o driver de câmera virtual |
+| **DroidCam OBS Plugin** | a saída virtual (Ferramentas → DroidCam Virtual Output) |
+| ffmpeg | utilitário de vídeo |
+
+**Só o Iriun Webcam fica manual** (não está no winget): https://iriun.com/ —
+e ele só é necessário para usar a **câmera do celular ao vivo**. Para rodar
+vídeo na câmera você não precisa nem dele nem do OBS, o emulador toca o arquivo
+sozinho com `-camera-back videofile:...`.
+
+Depois de instalar o OBS, ligue o servidor websocket uma vez em
+*Ferramentas → Configurações do WebSocket*. O `camvideo.py` lê a senha sozinho.
 
 ```powershell
 cd "D:\PROJETO EMULATION\setup"

@@ -58,24 +58,38 @@ foreach ($p in $pacotes) {
     "y" | & $sdkmanager --sdk_root="$SDK" $p | Out-Null
 }
 
-Passo "Opcionais: OBS e ffmpeg"
-# So precisa se voce for usar camera do celular ao vivo, ou vídeo sobreposto.
-# Para vídeo simples o emulador toca o arquivo sozinho (-camera-back videofile:...)
-$r = Read-Host "Instalar OBS Studio e ffmpeg? (s/N)"
-if ($r -eq "s") {
-    winget install --id OBSProject.OBSStudio -e --accept-package-agreements --silent
-    winget install --id Gyan.FFmpeg -e --accept-package-agreements --silent
-    Write-Host @"
-
-  Faltam dois programas que NAO estao no winget, baixe manualmente:
-    DroidCam Client (inclui o driver + plugin do OBS)  https://www.dev47apps.com/
-    Iriun Webcam (camera do celular)                   https://iriun.com/
-
-  E no OBS: Ferramentas > Configuracoes do WebSocket > ligar o servidor.
-  O camvideo.py le a senha sozinho de:
-    %APPDATA%\obs-studio\plugin_config\obs-websocket\config.json
-"@ -ForegroundColor Yellow
+Passo "OBS, DroidCam e ffmpeg"
+# DroidCam Client -> traz o driver de camera virtual, que e o unico caminho
+#                    para o emulador enxergar o que o OBS produz.
+# DroidCam OBS Plugin -> adiciona Ferramentas > DroidCam Virtual Output no OBS.
+# Sem esses dois, o modo "camera ao vivo" e "video sobreposto" nao funcionam.
+$programas = @(
+    @{ id = "OBSProject.OBSStudio";          nome = "OBS Studio" },
+    @{ id = "dev47apps.DroidCam";            nome = "DroidCam Client (driver)" },
+    @{ id = "dev47apps.DroidCamOBSPlugin";   nome = "DroidCam OBS Plugin" },
+    @{ id = "Gyan.FFmpeg";                   nome = "ffmpeg" }
+)
+foreach ($prog in $programas) {
+    Write-Host "  instalando $($prog.nome)"
+    winget install --id $($prog.id) -e --accept-package-agreements --accept-source-agreements --silent
 }
+
+Write-Host @"
+
+  FALTA UM, e nao esta no winget:
+
+    Iriun Webcam  ->  https://iriun.com/
+    (baixe o cliente de Windows e o app no celular)
+
+  Ele so e necessario para usar a CAMERA DO CELULAR ao vivo.
+  Para rodar video na camera voce nao precisa dele nem do OBS:
+      emulator -avd MinutePlay -camera-back "videofile:C:\seuideo.mp4" ...
+
+  Depois de instalar o OBS, ligue o servidor websocket uma vez:
+      OBS > Ferramentas > Configuracoes do WebSocket > ativar servidor
+  O camvideo.py le a senha sozinho de
+      %APPDATA%\obs-studio\plugin_config\obs-websocket\config.json
+"@ -ForegroundColor Yellow
 
 Passo "PATH"
 $novos = "$SDK\platform-tools", "$SDK\emulator"
