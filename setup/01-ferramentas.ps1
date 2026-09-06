@@ -42,6 +42,34 @@ function Achar-Python {
     return $null
 }
 
+# ARMADILHA IRMA DA DE CIMA, e pior: o winget instala o Temurin com --silent, e
+# nesse modo o MSI NAO poe o java no PATH nem cria o JAVA_HOME (sao features
+# opcionais, desligadas por padrao). O sdkmanager.bat morre no ato com
+# "JAVA_HOME is not set", mas a saida ia toda para Out-Null e falha de .bat nao
+# dispara o $ErrorActionPreference -- entao o script imprimia "instalando X"
+# para os cinco pacotes, nao instalava nenhum, e terminava anunciando sucesso.
+# O javac e o keytool do lentes/build.sh dependem do mesmo PATH.
+function Achar-Java {
+    if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\java.exe")) {
+        return $env:JAVA_HOME
+    }
+    $raizes = @(
+        "$env:ProgramFiles\Eclipse Adoptium",
+        "${env:ProgramFiles(x86)}\Eclipse Adoptium",
+        "$env:LOCALAPPDATA\Programs\Eclipse Adoptium",
+        "$env:ProgramFiles\Java"
+    )
+    foreach ($r in $raizes) {
+        $achado = Get-ChildItem "$r\jdk*" -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path "$($_.FullName)\bin\java.exe" } |
+                  Sort-Object Name -Descending | Select-Object -First 1
+        if ($achado) { return $achado.FullName }
+    }
+    $cmd = Get-Command java.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return (Split-Path (Split-Path $cmd.Source -Parent) -Parent) }
+    return $null
+}
+
 Passo "Ferramentas base (JDK e Python)"
 # JDK: o sdkmanager e o javac precisam dele. Python: roda o camvideo.py.
 winget install --id EclipseAdoptium.Temurin.21.JDK -e --accept-source-agreements --accept-package-agreements --silent
@@ -95,12 +123,42 @@ $sdkmanager = "$SDK\cmdline-tools\latest\bin\sdkmanager.bat"
 $env:ANDROID_SDK_ROOT = $SDK
 $env:ANDROID_HOME = $SDK
 
+# sem isso o sdkmanager.bat nao acha o java e o passo inteiro falha calado
+$jdk = Achar-Java
+if (-not $jdk) {
+    Write-Host @"
+
+  Nao achei um JDK. O sdkmanager nao roda sem Java.
+
+  Confira se o Temurin 21 entrou:
+      winget list --id EclipseAdoptium.Temurin.21.JDK
+  e onde ele foi parar (normalmente C:\Program Files\Eclipse Adoptium\jdk-21...).
+  Depois rode este script de novo.
+"@ -ForegroundColor Red
+    exit 1
+}
+$env:JAVA_HOME = $jdk
+$env:Path = "$jdk\bin;$env:Path"
+Write-Host "  JAVA_HOME = $jdk"
+
 # build-tools 37: as versoes antigas (34) quebram com class files de JDK novo,
 # o d8 estoura NullPointerException ao ler classe anonima.
 # As licencas travam a instalacao se nao forem aceitas antes.
+#
+# ARMADILHA: `$texto | & $sdkmanager` NAO funciona. O sdkmanager.bat e um
+# wrapper que chama java, e o pipe do PowerShell nao entrega o stdin ate la: o
+# prompt "Review licenses that have not been accepted (y/N)?" le EOF e recusa
+# tudo. O sintoma e "7 of 7 SDK package licenses not accepted", seguido de
+# "Skipping following packages as the license is not accepted" em cada pacote
+# -- e o sdkmanager SAI 0 assim mesmo. Redirecionar um arquivo pelo cmd entrega.
 Write-Host "  aceitando licencas"
-$licencas = "y`n" * 30
-$licencas | & $sdkmanager --sdk_root="$SDK" --licenses | Out-Null
+$sim = Join-Path $env:TEMP "sdk-yes.txt"
+(1..100 | ForEach-Object { "y" }) -join "`r`n" | Set-Content $sim -Encoding ASCII
+cmd /c "`"$sdkmanager`" --sdk_root=`"$SDK`" --licenses < `"$sim`""
+if (-not (Test-Path "$SDK\licenses\android-sdk-license")) {
+    Write-Host "  ERRO: as licencas do SDK nao foram aceitas." -ForegroundColor Red
+    exit 1
+}
 
 $pacotes = @(
     "platform-tools",
@@ -111,7 +169,34 @@ $pacotes = @(
 )
 foreach ($p in $pacotes) {
     Write-Host "  instalando $p"
-    "y" | & $sdkmanager --sdk_root="$SDK" $p | Out-Null
+    cmd /c "`"$sdkmanager`" --sdk_root=`"$SDK`" `"$p`" < `"$sim`""
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERRO: falhou ao instalar '$p' (codigo $LASTEXITCODE)." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# confere no disco: sdkmanager ja saiu 0 sem ter baixado nada
+Write-Host "  conferindo o que chegou no disco"
+$esperado = @{
+    "platform-tools"                                    = "platform-tools\adb.exe"
+    "emulator"                                          = "emulator\emulator.exe"
+    "platforms;android-34"                              = "platforms\android-34\android.jar"
+    "build-tools;37.0.0"                                = "build-tools\37.0.0\d8.bat"
+    "system-images;android-33;google_apis_playstore;x86_64" = "system-images\android-33\google_apis_playstore\x86_64\system.img"
+}
+$faltando = @()
+foreach ($p in $esperado.Keys) {
+    if (Test-Path "$SDK\$($esperado[$p])") {
+        Write-Host "    ok  $p"
+    } else {
+        Write-Host "    FALTANDO  $p" -ForegroundColor Red
+        $faltando += $p
+    }
+}
+if ($faltando) {
+    Write-Host "`n  ERRO: $($faltando.Count) pacote(s) do SDK nao chegaram no disco." -ForegroundColor Red
+    exit 1
 }
 
 Passo "OBS, DroidCam e ffmpeg"
@@ -139,7 +224,7 @@ Write-Host @"
 
   Ele so e necessario para usar a CAMERA DO CELULAR ao vivo.
   Para rodar video na camera voce nao precisa dele nem do OBS:
-      emulator -avd MinutePlay -camera-back "videofile:C:\seuideo.mp4" ...
+      emulator -avd MinutePlay -camera-back "videofile:C:\caminho\seu\video.mp4" ...
 
   Depois de instalar o OBS, ligue o servidor websocket uma vez:
       OBS > Ferramentas > Configuracoes do WebSocket > ativar servidor
@@ -148,7 +233,9 @@ Write-Host @"
 "@ -ForegroundColor Yellow
 
 Passo "PATH"
-$novos = "$SDK\platform-tools", "$SDK\emulator"
+# o bin do JDK entra junto: o lentes/build.sh chama javac e keytool pelo PATH,
+# e o winget --silent nao os coloca la.
+$novos = "$SDK\platform-tools", "$SDK\emulator", "$jdk\bin"
 $atual = [Environment]::GetEnvironmentVariable("Path", "User")
 foreach ($n in $novos) {
     if ($atual -notlike "*$n*") {
@@ -158,6 +245,7 @@ foreach ($n in $novos) {
 [Environment]::SetEnvironmentVariable("Path", $atual, "User")
 [Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", $SDK, "User")
 [Environment]::SetEnvironmentVariable("ANDROID_HOME", $SDK, "User")
+[Environment]::SetEnvironmentVariable("JAVA_HOME", $jdk, "User")
 
 Write-Host "`nPronto. SDK em $SDK" -ForegroundColor Green
 Write-Host "Abra um PowerShell NOVO (pro PATH valer) e rode 02-criar-avd.ps1"

@@ -58,7 +58,10 @@ Depois de instalar o OBS, ligue o servidor websocket uma vez em
 cd .\setup
 powershell -ExecutionPolicy Bypass -File .\01-ferramentas.ps1
 ```
-Instala JDK, Python, `websockets`, e o SDK do Android (~16 GB, demora).
+Instala JDK, Python, `websockets`, e o SDK do Android (~4,6 GB no disco, demora).
+
+O script confere no fim se os cinco pacotes do SDK chegaram mesmo. Se ele
+terminar sem reclamar, o ambiente está de pé; se reclamar, ele diz qual faltou.
 
 **Abra um PowerShell novo** (para o PATH valer) e:
 
