@@ -13,9 +13,9 @@ do celular ao vivo.
 | Minute instalado, logado, passando pelo PAIRIP | ✅ |
 | Trava de modelo "Galaxy S22 ou superior" | ✅ contornada (`s22spoof`) |
 | Trava de câmera ultra-wide na gravação | ✅ contornada (`uwcam`) — a frontal vira simples, ver [docs/uwcam.md](docs/uwcam.md) |
-| Vídeo do PC entrando como câmera | ✅ duas vias (nativa e OBS) |
-| Câmera do celular ao vivo entrando como câmera | ✅ via Iriun + OBS |
-| Vídeo sobreposto à câmera ao vivo | ✅ via OBS |
+| Vídeo do PC entrando como câmera | ✅ via nativa (`videofile:` + `preparar.py`) |
+| Câmera do celular ao vivo entrando como câmera | ❌ dependia do OBS → DroidCam, que não existe mais (§4) |
+| Vídeo sobreposto à câmera ao vivo | ❌ mesma causa (§4) |
 | **Vídeo/câmera externa dentro da gravação do Minute** | ❌ impossível — ver §6 |
 
 ---
@@ -167,7 +167,8 @@ PROJETO EMULATION/
 ├── setup/                 instalação do zero no PC novo
 ├── camera/CAMERA.bat      painel: escolhe a fonte da câmera e sobe o emulador
 ├── camvideo/
-│   ├── camvideo.py        monta a imagem no OBS (câmera ao vivo + vídeo)
+│   ├── preparar.py        deixa um vídeo pronto para a via nativa (use este)
+│   ├── camvideo.py        monta a imagem no OBS — via quebrada, ver §4
 │   └── videos/            << jogue seus vídeos aqui
 ├── lentes/                app Android que inspeciona as câmeras (diagnóstico)
 ├── magisk/                os dois módulos, prontos para instalar
@@ -197,39 +198,74 @@ Abrir **`camera/CAMERA.bat`**:
 
 | Opção | Fonte da traseira | Para quê |
 |---|---|---|
-| 1 | vídeo (via OBS/DroidCam) | prank com vídeo |
-| 2 | Iriun | sua câmera ao vivo |
-| 3 | Iriun + vídeo por cima | live com sobreposição |
+| 1 | vídeo (via OBS/DroidCam) | ⚠️ **quebrada** — ver abaixo |
+| 2 | Iriun | ⚠️ **quebrada** — ver abaixo |
+| 3 | Iriun + vídeo por cima | ⚠️ **quebrada** — ver abaixo |
 | 4 | `emulated` | **Minute** (é a única com ultra-wide) |
 
-### Via nativa do emulador (mais simples, sem OBS)
+### Via nativa do emulador — **use esta**
 
-Descoberta tardia: o emulador toca arquivo de vídeo direto como câmera.
+O emulador toca arquivo de vídeo direto como câmera. Dispensa OBS, DroidCam e
+ordem de inicialização.
+
+**Passo 1, prepare o vídeo.** Sem isso a imagem chega cortada: o buffer de
+câmera do emulador é **1280×720 deitado** e o `sensor.orientation` é 90, então
+o app ainda gira o quadro para exibir. Um vídeo vertical 1080×1920 jogado
+direto perde ~68% da altura (`1080 ÷ 16/9 = 607` px sobrevivem de 1920).
+
+```bash
+cd camvideo
+python preparar.py videos/meu.mp4          # gera videos/meu.pronto.mp4
+```
+
+Gira 270° e encaixa em 1280×720. Um vertical 9:16 vira 16:9 exato — encaixa
+sem tarja, e depois o app gira de volta: cadeia inteira sem perda. Opções:
+`--modo cheio` corta em vez de completar, `--rot`/`--no-rot`/`--espelhar`
+ajustam a orientação.
+
+**Passo 2, suba com ele:**
 
 ```powershell
 emulator -avd MinutePlay -no-snapshot -timezone America/Sao_Paulo `
-         -camera-back "videofile:C:\caminho\para\seu\video.mp4" -camera-front emulated -gpu auto
+         -camera-back "videofile:C:\caminho\meu.pronto.mp4" -camera-front emulated -gpu auto
 ```
 
-Também aceita `imagefile:` e `image360:`. **Prefira isso** para vídeo simples:
-dispensa OBS, DroidCam, ordem de inicialização e redimensionamento duplo.
-Só não serve para o Minute (§6).
+Também aceita `imagefile:` e `image360:`. Só não serve para o Minute (§6).
 
-### Via OBS (necessária só para câmera ao vivo, ou vídeo + câmera juntos)
+> **Aspas importam.** Passe `"videofile:CAMINHO"` como um token só. Se o
+> argumento for montado por partes (ex.: array de `Start-Process`), caminho com
+> espaço quebra e o emulador morre sem mensagem — e a pasta deste projeto tem
+> espaço no nome.
+
+### Via OBS — ⚠️ quebrada nas versões atuais
+
+**Não funciona mais**, e não é configuração: a peça que ligava o OBS ao driver
+deixou de existir. Verificado com OBS 32.2.1, DroidCam OBS Plugin 2.5.1 e
+DroidCam Client 6.5.3:
+
+- O menu **Ferramentas → DroidCam Virtual Output** não existe mais. O
+  `droidcam-obs.dll` 2.5.1 não tem nenhuma string "Virtual Output", nem no
+  binário nem em `locale/en-US.ini` — ele virou só plugin de *fonte*
+  (celular → OBS), com `Activate`, `Deactivate`, `Resolution`, `Device`.
+- O DroidCam Client 6.5.3 é só `DroidCamApp.exe`, sem componente de saída.
+- A **VirtualCam nativa do OBS não substitui**. O `ffmpeg -list_devices` mostra
+  `OBS Virtual Camera` e `DroidCam Source 2` como `@device_sw_` (filtros de
+  software), e `DroidCam Source 3` como `@device_pnp_`. O
+  `emulator -webcam-list` enumera **só o PnP** — por isso a VirtualCam inicia
+  com sucesso e mesmo assim o emulador não a enxerga.
+
+O `camvideo.py` em si continua íntegro: conecta no obs-websocket, autentica,
+cria a cena, carrega o vídeo e posiciona — tudo verificado. O que quebrou é o
+elo *depois* dele, do OBS para o driver de câmera. Fica no repositório porque
+volta a servir se o dev47apps devolver a saída virtual.
+
+Consequência: **câmera do celular ao vivo e vídeo sobreposto não têm caminho
+hoje**. Para vídeo, a via nativa acima cobre — e melhor.
 
 ```bash
-cd camvideo    # a partir da raiz do repositório clonado
-
-python camvideo.py videos/meu.mp4              # só o vídeo, tela cheia
-python camvideo.py --live                      # só a câmera do celular
-python camvideo.py videos/meu.mp4 --live       # câmera + vídeo no canto
-python camvideo.py videos/meu.mp4 --live --sobre cheio
-python camvideo.py --live --cam-deitada        # câmera 16:9 inteira (apps deitados)
-python camvideo.py --listar-cams
-python camvideo.py --status
+cd camvideo
+python camvideo.py --status        # ainda útil para conferir a conexão com o OBS
 ```
-
-Precisa de OBS com **obs-websocket** ligado e o plugin **DroidCam Virtual Output**.
 
 ---
 
@@ -261,6 +297,19 @@ sem tamanho. O `camvideo.py --live` desativa e reativa a fonte para reconectar.
 
 **Modelo tem que valer no boot.** `resetprop` com o sistema no ar não adianta,
 o Minute já decidiu. Por isso é um módulo Magisk.
+
+**O vídeo chega cortado se não for preparado.** São três reduções empilhadas,
+medidas com o `lentes`:
+
+| Etapa | Efeito |
+|---|---|
+| buffer da câmera | teto de **1280×720**, deitado |
+| `sensor.orientation = 90` | o app gira o quadro para exibir |
+| exibição em "cheio" | corta para preencher a tela 9:16 |
+
+Um vertical 1080×1920 direto perde ~68% da altura antes de chegar ao app. O
+`camvideo/preparar.py` resolve girando e encaixando antes — é o equivalente,
+para a via nativa, do que o `recorte_para` do `camvideo.py` fazia dentro do OBS.
 
 **O `uwcam` troca traseira e frontal de lado.** No emulador stock, quem já vem
 como multi-camera lógica com físicas é a **frontal** — a traseira é uma câmera
