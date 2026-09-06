@@ -189,23 +189,59 @@ if ($acel -match "is installed and usable|HAXM version|WHPX .*installed") {
     $vt = (Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled
     Write-Host "  SEM aceleracao. O emulador nao vai subir." -ForegroundColor Yellow
     Write-Host "  VirtualizationFirmwareEnabled = $vt"
+
     if (-not $vt) {
         Write-Host @"
 
   A virtualizacao esta DESLIGADA no firmware. Entre no BIOS/UEFI e ligue
-  VT-x (Intel) ou SVM/AMD-V (AMD). Sem isso nao ha o que fazer no Windows.
+  VT-x (Intel) ou SVM/AMD-V (AMD). Sem isso nao ha o que fazer no Windows,
+  nem com WHPX nem com AEHD.
 "@ -ForegroundColor Yellow
     } else {
-        Write-Host @"
+        # WHPX e AEHD sao mutuamente exclusivos. Se Hyper-V, WSL2, Sandbox ou a
+        # Integridade de memoria estiverem ativos, o AEHD instala e o driver NAO
+        # carrega -- fica 0% de CPU e um driver kernel a mais no sistema. Entao
+        # so sugerimos o AEHD depois de confirmar que o campo esta livre.
+        $hyperv = [bool](Get-Service vmcompute, vmms -ErrorAction SilentlyContinue)
+        $hvci = [bool](Get-CimInstance Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard `
+                        -ErrorAction SilentlyContinue).SecurityServicesRunning
+        $present = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent
+        $pro = (Get-CimInstance Win32_OperatingSystem).Caption -notmatch "Home"
 
-  A CPU suporta; falta so o driver. Abra um PowerShell COMO ADMINISTRADOR e:
+        Write-Host "  Hyper-V/WSL2 presente : $hyperv"
+        Write-Host "  Integridade de memoria: $hvci"
+        Write-Host "  Edicao Pro/Enterprise : $pro"
+
+        if ($pro) {
+            Write-Host @"
+
+  Caminho recomendado: WHPX (recurso do Windows, sem driver de terceiros).
+  Num PowerShell COMO ADMINISTRADOR:
+
+      dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart
+
+  Reinicie e rode 'emulator -accel-check'.
+"@ -ForegroundColor Yellow
+        }
+        if ($hyperv -or $hvci -or $present) {
+            Write-Host @"
+
+  NAO use o AEHD nesta maquina: ja existe hipervisor/Integridade de memoria
+  ativo. O instalador passa, mas o driver nao carrega e o emulador continua
+  travado. Use o WHPX acima.
+"@ -ForegroundColor Red
+        } else {
+            Write-Host @"
+
+  Alternativa (so se o WHPX nao servir, ex.: Windows Home). O campo esta livre
+  -- sem Hyper-V e sem Integridade de memoria. Como ADMINISTRADOR:
 
       cd "$SDK\extras\google\Android_Emulator_Hypervisor_Driver"
       .\silent_install.bat
 
-  (o pacote ja foi baixado acima). Confira depois com:
-      emulator -accel-check
+  (o pacote ja foi baixado acima).
 "@ -ForegroundColor Yellow
+        }
     }
 }
 

@@ -55,25 +55,55 @@ CPU acceleration status: Android Emulator hypervisor driver is not installed
 ```
 
 Isso é anterior a tudo neste repositório e os scripts não conseguem resolver:
-exige elevação. Confira primeiro se a máquina suporta:
+exige elevação.
+
+**Passo 0 — a virtualização precisa estar ligada no firmware:**
 
 ```powershell
 (Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled   # tem que ser True
 ```
 
-Se der `False`, ligue VT-x/AMD-V no BIOS. Se der `True`, instale o driver num
-**PowerShell como administrador** (o `01-ferramentas.ps1` já baixa o pacote):
+Se der `False`, ligue VT-x (Intel) ou SVM/AMD-V (AMD) no BIOS/UEFI. Sem isso
+nenhum dos caminhos abaixo funciona — e essa é a causa mais comum de emulador
+travado em PC recém-formatado.
+
+Existem **dois** hipervisores possíveis, e eles são **mutuamente exclusivos**.
+Escolher o errado custa caro: o AEHD instala sem reclamar, o driver não carrega,
+e você continua com 0% de CPU — agora com um driver a mais no sistema.
+
+#### Preferir WHPX (recurso do Windows)
+
+É o que roda no PC de referência deste projeto, e não envolve driver de
+terceiros. Precisa de Windows **Pro/Enterprise**. Num PowerShell **como
+administrador**:
+
+```powershell
+dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart
+```
+
+Reiniciar, e conferir com `emulator -accel-check`.
+
+#### AEHD, só se o WHPX não servir
+
+Cabe quando a edição do Windows é Home, ou quando o WHPX não está disponível.
+**Antes**, confirme que nada mais está segurando o hipervisor — se qualquer um
+destes estiver ativo, o AEHD não vai carregar:
+
+```powershell
+Get-Service vmcompute,vmms -ErrorAction SilentlyContinue   # Hyper-V / WSL2 / Sandbox
+Get-CimInstance Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard |
+    Select-Object -Expand SecurityServicesRunning          # Integridade de memória
+(Get-CimInstance Win32_ComputerSystem).HypervisorPresent   # tem que ser False
+```
+
+Se estiver tudo limpo, o `01-ferramentas.ps1` já baixou o pacote:
 
 ```powershell
 cd "$env:LOCALAPPDATA\Android\Sdk\extras\google\Android_Emulator_Hypervisor_Driver"
 .\silent_install.bat
 ```
 
-Alternativa, se preferir o hipervisor da Microsoft: ligar o recurso
-*Plataforma do Hipervisor do Windows* em **Ativar ou desativar recursos do
-Windows** e reiniciar. Não use os dois ao mesmo tempo.
-
-Confira depois com `emulator -accel-check`.
+Em qualquer um dos dois casos, o veredito final é o `emulator -accel-check`.
 
 **Só o Iriun Webcam fica manual** (não está no winget): https://iriun.com/ —
 e ele só é necessário para usar a **câmera do celular ao vivo**. Para rodar
