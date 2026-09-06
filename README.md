@@ -218,10 +218,16 @@ cd camvideo
 python preparar.py videos/meu.mp4          # gera videos/meu.pronto.mp4
 ```
 
-Gira 270° e encaixa em 1280×720. Um vertical 9:16 vira 16:9 exato — encaixa
-sem tarja, e depois o app gira de volta: cadeia inteira sem perda. Opções:
-`--modo cheio` corta em vez de completar, `--rot`/`--no-rot`/`--espelhar`
-ajustam a orientação.
+Encaixa o vídeo em 1280×720 **sem cortar nada**. Um 16:9 enche o quadro exato;
+outros formatos aparecem inteiros, com tarja preta em volta. Não gira — a
+orientação fica como estava.
+
+| Opção | Para quê |
+|---|---|
+| *(padrão)* | cabe inteiro, sem perder nada |
+| `--modo cheio` | preenche cortando o excesso |
+| `--rot 270` | vídeo vertical em pé numa tela em pé |
+| `--espelhar` | espelha na horizontal |
 
 **Passo 2, suba com ele:**
 

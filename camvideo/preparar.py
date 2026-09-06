@@ -15,13 +15,17 @@ ANTES, nada se perde.
 Uso:
     python preparar.py meu.mp4                      -> meu.pronto.mp4
     python preparar.py meu.mp4 saida.mp4
-    python preparar.py meu.mp4 --modo cheio         corta em vez de completar
-    python preparar.py meu.mp4 --rot 90             gira diferente
-    python preparar.py meu.mp4 --no-rot             nao gira
-    python preparar.py meu.mp4 --espelhar
 
-    --modo caber (padrao)  cabe inteiro, sobra tarja preta. Nao perde nada.
+    --modo caber (padrao)  cabe inteiro, sobra tarja preta. NAO PERDE NADA.
     --modo cheio           preenche os 1280x720 cortando o excesso.
+    --rot 90|180|270       gira. O padrao e NAO girar.
+    --espelhar             espelha na horizontal.
+
+O padrao (sem girar, modo caber) e o que resolve o caso comum: video maior que
+o quadro da camera, que sem isso entra cortado. Video 16:9 encaixa exato e
+enche a tela; outros formatos aparecem inteiros, com tarja preta em volta.
+
+Use --rot 270 se quiser um video vertical em pe numa tela em pe.
 
 Depois:
     emulator -avd MinutePlay -no-snapshot -camera-back "videofile:C:\\...\\saida.mp4" ...
@@ -78,7 +82,7 @@ def montar_filtro(rot, espelhar, modo):
 
 
 def ler_args(argv):
-    cfg = {"entrada": None, "saida": None, "rot": 270,
+    cfg = {"entrada": None, "saida": None, "rot": 0,
            "espelhar": False, "modo": "caber"}
     i = 0
     while i < len(argv):
