@@ -22,7 +22,22 @@ do celular ao vivo.
 
 ## 2. Instalar num PC novo
 
+> **O repositório tem a receita, não o emulador pronto.**
+> O AVD tem 8,4 GB e não está aqui. Clonando você *reconstrói* o ambiente:
+> os scripts automatizam o download e a configuração, mas três coisas são
+> manuais e não têm como automatizar — login na conta Google, instalar o
+> Minute pela Play Store e login no Minute. Conte com 1–2 horas, quase tudo
+> esperando download.
+>
+> Se puder levar a pasta do AVD por pendrive, pule para *"Atalho"* abaixo:
+> a diferença é 10 minutos contra 2 horas.
+
 Precisa só de **Git** e **PowerShell** (já vem no Windows). Os scripts baixam o resto.
+
+O `01-ferramentas.ps1` pergunta se você quer OBS e ffmpeg. Eles só fazem falta
+para **câmera do celular ao vivo** ou **vídeo sobreposto**. Para vídeo simples o
+emulador toca o arquivo sozinho (`-camera-back videofile:...`) e você não precisa
+de nada disso. DroidCam e Iriun não estão no winget — o script mostra os links.
 
 ```powershell
 cd "D:\PROJETO EMULATION\setup"
