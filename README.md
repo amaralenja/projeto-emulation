@@ -270,9 +270,23 @@ câmeras físicas**. Não afeta o Minute (só usa a traseira), mas surpreende qu
 for inspecionar a frontal depois. Detalhes e como reverter em
 [docs/uwcam.md](docs/uwcam.md).
 
-**`su` via ADB.** Não basta *Superuser Access = Apps and ADB* nem
-*Automatic Response = Grant*. Tem que ligar o botão do **[SharedUID] Shell** na
-aba Superuser do Magisk.
+**`su` via ADB.** Confira primeiro — pode já estar liberado:
+
+```bash
+adb shell "su -c id"      # quer ver: uid=0(root)
+```
+
+Numa instalação em 2026-09 o root já veio concedido direto do rootAVD, sem
+passo manual nenhum. Se **não** responder `uid=0`, aí sim: não basta
+*Superuser Access = Apps and ADB* nem *Automatic Response = Grant* — tem que
+ligar o botão do **[SharedUID] Shell** na aba Superuser do Magisk.
+
+**Caminhos do Git Bash para o `adb.exe`.** Vale para o `03` **e para o `04`**.
+O `pwd` do Git Bash devolve `/c/PROJETO EMULATION`, e o `adb.exe` é binário
+Windows: não entende esse formato. No `03` o sintoma é o push falhar calado e o
+patch abortar com *"Ramdisk.img uses UNKNOWN compression"*; no `04` é
+`adb: error: cannot stat '/c/...': No such file or directory`. Os dois scripts
+resolvem com `cygpath -m`, que devolve `C:/PROJETO EMULATION`.
 
 **Caminhos no rootAVD.** `ANDROID_SDK_ROOT` precisa estar no formato `C:/...`.
 Com `/c/Users/...` o `adb.exe` não acha o arquivo, o push falha calado e o patch

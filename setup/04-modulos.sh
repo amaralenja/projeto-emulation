@@ -12,7 +12,11 @@ set -e
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
-BASE="$(cd "$(dirname "$0")/.." && pwd)"
+# cygpath -m: caminho estilo Windows com barras normais. MESMA armadilha do
+# 03-rootear.sh -- o `pwd` do Git Bash devolve "/c/PROJETO EMULATION", e o
+# adb.exe e binario Windows, que nao entende esse formato. Sem a conversao o
+# push falha com "cannot stat '/c/...': No such file or directory".
+BASE="$(cygpath -m "$(cd "$(dirname "$0")/.." && pwd)")"
 TMP=/data/local/tmp/modulos
 
 echo "=== conferindo root ==="
