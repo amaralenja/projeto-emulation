@@ -6,69 +6,9 @@
 $ErrorActionPreference = "Stop"
 $SDK = "$env:LOCALAPPDATA\Android\Sdk"
 
+. "$PSScriptRoot\comum.ps1"
+
 function Passo($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
-
-# O winget escreve o PATH novo no registro, mas o processo atual continua com o
-# PATH antigo. Sem recarregar, nada que foi instalado agora e visivel aqui.
-function Recarregar-Path {
-    $maquina = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $usuario = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = @($maquina, $usuario | Where-Object { $_ }) -join ";"
-}
-
-# ARMADILHA: num Windows limpo, "python" no PATH e o atalho da Microsoft Store
-# (%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe, um stub de 0 byte que abre a
-# loja). Chamar "python -m pip" logo depois do winget cai nele, e como falha de
-# .exe nativo NAO dispara o $ErrorActionPreference, o script seguia adiante sem
-# instalar o websockets -- e o camvideo.py so quebrava muito depois com
-# ModuleNotFoundError. Por isso achamos o interpretador de verdade pelo caminho.
-function Achar-Python {
-    Recarregar-Path
-    $candidatos = @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe")
-    foreach ($raiz in "$env:LOCALAPPDATA\Programs\Python", "$env:ProgramFiles") {
-        $candidatos += Get-ChildItem "$raiz\Python3*\python.exe" -ErrorAction SilentlyContinue |
-                       Sort-Object FullName -Descending | ForEach-Object { $_.FullName }
-    }
-    $candidatos += Get-Command python.exe -All -ErrorAction SilentlyContinue |
-                   ForEach-Object { $_.Source }
-
-    foreach ($c in $candidatos) {
-        if (-not $c) { continue }
-        if ($c -like "*\WindowsApps\*") { continue }          # stub da Store
-        if (-not (Test-Path $c)) { continue }
-        if ((Get-Item $c).Length -eq 0) { continue }          # stub tem 0 byte
-        return $c
-    }
-    return $null
-}
-
-# ARMADILHA IRMA DA DE CIMA, e pior: o winget instala o Temurin com --silent, e
-# nesse modo o MSI NAO poe o java no PATH nem cria o JAVA_HOME (sao features
-# opcionais, desligadas por padrao). O sdkmanager.bat morre no ato com
-# "JAVA_HOME is not set", mas a saida ia toda para Out-Null e falha de .bat nao
-# dispara o $ErrorActionPreference -- entao o script imprimia "instalando X"
-# para os cinco pacotes, nao instalava nenhum, e terminava anunciando sucesso.
-# O javac e o keytool do lentes/build.sh dependem do mesmo PATH.
-function Achar-Java {
-    if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\java.exe")) {
-        return $env:JAVA_HOME
-    }
-    $raizes = @(
-        "$env:ProgramFiles\Eclipse Adoptium",
-        "${env:ProgramFiles(x86)}\Eclipse Adoptium",
-        "$env:LOCALAPPDATA\Programs\Eclipse Adoptium",
-        "$env:ProgramFiles\Java"
-    )
-    foreach ($r in $raizes) {
-        $achado = Get-ChildItem "$r\jdk*" -Directory -ErrorAction SilentlyContinue |
-                  Where-Object { Test-Path "$($_.FullName)\bin\java.exe" } |
-                  Sort-Object Name -Descending | Select-Object -First 1
-        if ($achado) { return $achado.FullName }
-    }
-    $cmd = Get-Command java.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return (Split-Path (Split-Path $cmd.Source -Parent) -Parent) }
-    return $null
-}
 
 Passo "Ferramentas base (JDK e Python)"
 # JDK: o sdkmanager e o javac precisam dele. Python: roda o camvideo.py.
@@ -124,21 +64,7 @@ $env:ANDROID_SDK_ROOT = $SDK
 $env:ANDROID_HOME = $SDK
 
 # sem isso o sdkmanager.bat nao acha o java e o passo inteiro falha calado
-$jdk = Achar-Java
-if (-not $jdk) {
-    Write-Host @"
-
-  Nao achei um JDK. O sdkmanager nao roda sem Java.
-
-  Confira se o Temurin 21 entrou:
-      winget list --id EclipseAdoptium.Temurin.21.JDK
-  e onde ele foi parar (normalmente C:\Program Files\Eclipse Adoptium\jdk-21...).
-  Depois rode este script de novo.
-"@ -ForegroundColor Red
-    exit 1
-}
-$env:JAVA_HOME = $jdk
-$env:Path = "$jdk\bin;$env:Path"
+$jdk = Preparar-Java
 Write-Host "  JAVA_HOME = $jdk"
 
 # build-tools 37: as versoes antigas (34) quebram com class files de JDK novo,
@@ -165,7 +91,11 @@ $pacotes = @(
     "emulator",
     "platforms;android-34",
     "build-tools;37.0.0",
-    "system-images;android-33;google_apis_playstore;x86_64"
+    "system-images;android-33;google_apis_playstore;x86_64",
+    # driver de aceleracao: sem hipervisor o emulador x86_64 nao sobe, morre com
+    # "x86_64 emulation currently requires hardware acceleration!". Baixar da
+    # para fazer aqui; INSTALAR precisa de admin -- ver o aviso no fim do script.
+    "extras;google;Android_Emulator_Hypervisor_Driver"
 )
 foreach ($p in $pacotes) {
     Write-Host "  instalando $p"
@@ -184,6 +114,7 @@ $esperado = @{
     "platforms;android-34"                              = "platforms\android-34\android.jar"
     "build-tools;37.0.0"                                = "build-tools\37.0.0\d8.bat"
     "system-images;android-33;google_apis_playstore;x86_64" = "system-images\android-33\google_apis_playstore\x86_64\system.img"
+    "extras;google;Android_Emulator_Hypervisor_Driver"  = "extras\google\Android_Emulator_Hypervisor_Driver\silent_install.bat"
 }
 $faltando = @()
 foreach ($p in $esperado.Keys) {
@@ -246,6 +177,37 @@ foreach ($n in $novos) {
 [Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", $SDK, "User")
 [Environment]::SetEnvironmentVariable("ANDROID_HOME", $SDK, "User")
 [Environment]::SetEnvironmentVariable("JAVA_HOME", $jdk, "User")
+
+Passo "Aceleracao por hardware"
+# O emulador x86_64 nao sobe sem hipervisor -- morre com "x86_64 emulation
+# currently requires hardware acceleration!". Instalar o driver exige admin,
+# entao este script so diagnostica e diz o que fazer.
+$acel = & "$SDK\emulator\emulator.exe" -accel-check 2>&1 | Out-String
+if ($acel -match "is installed and usable|HAXM version|WHPX .*installed") {
+    Write-Host "  ok, aceleracao disponivel" -ForegroundColor Green
+} else {
+    $vt = (Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled
+    Write-Host "  SEM aceleracao. O emulador nao vai subir." -ForegroundColor Yellow
+    Write-Host "  VirtualizationFirmwareEnabled = $vt"
+    if (-not $vt) {
+        Write-Host @"
+
+  A virtualizacao esta DESLIGADA no firmware. Entre no BIOS/UEFI e ligue
+  VT-x (Intel) ou SVM/AMD-V (AMD). Sem isso nao ha o que fazer no Windows.
+"@ -ForegroundColor Yellow
+    } else {
+        Write-Host @"
+
+  A CPU suporta; falta so o driver. Abra um PowerShell COMO ADMINISTRADOR e:
+
+      cd "$SDK\extras\google\Android_Emulator_Hypervisor_Driver"
+      .\silent_install.bat
+
+  (o pacote ja foi baixado acima). Confira depois com:
+      emulator -accel-check
+"@ -ForegroundColor Yellow
+    }
+}
 
 Write-Host "`nPronto. SDK em $SDK" -ForegroundColor Green
 Write-Host "Abra um PowerShell NOVO (pro PATH valer) e rode 02-criar-avd.ps1"

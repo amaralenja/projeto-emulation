@@ -45,6 +45,36 @@ O `01-ferramentas.ps1` instala tudo pelo winget:
 | **DroidCam OBS Plugin** | a saída virtual (Ferramentas → DroidCam Virtual Output) |
 | ffmpeg | utilitário de vídeo |
 
+### Pré-requisito: aceleração por hardware (precisa de admin)
+
+O emulador x86_64 **não sobe** sem hipervisor. O sintoma é morrer no boot com:
+
+```
+ERROR | x86_64 emulation currently requires hardware acceleration!
+CPU acceleration status: Android Emulator hypervisor driver is not installed
+```
+
+Isso é anterior a tudo neste repositório e os scripts não conseguem resolver:
+exige elevação. Confira primeiro se a máquina suporta:
+
+```powershell
+(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled   # tem que ser True
+```
+
+Se der `False`, ligue VT-x/AMD-V no BIOS. Se der `True`, instale o driver num
+**PowerShell como administrador** (o `01-ferramentas.ps1` já baixa o pacote):
+
+```powershell
+cd "$env:LOCALAPPDATA\Android\Sdk\extras\google\Android_Emulator_Hypervisor_Driver"
+.\silent_install.bat
+```
+
+Alternativa, se preferir o hipervisor da Microsoft: ligar o recurso
+*Plataforma do Hipervisor do Windows* em **Ativar ou desativar recursos do
+Windows** e reiniciar. Não use os dois ao mesmo tempo.
+
+Confira depois com `emulator -accel-check`.
+
 **Só o Iriun Webcam fica manual** (não está no winget): https://iriun.com/ —
 e ele só é necessário para usar a **câmera do celular ao vivo**. Para rodar
 vídeo na câmera você não precisa nem dele nem do OBS, o emulador toca o arquivo
