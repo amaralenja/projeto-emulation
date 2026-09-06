@@ -12,7 +12,7 @@ do celular ao vivo.
 |---|---|
 | Minute instalado, logado, passando pelo PAIRIP | ✅ |
 | Trava de modelo "Galaxy S22 ou superior" | ✅ contornada (`s22spoof`) |
-| Trava de câmera ultra-wide na gravação | ✅ contornada (`uwcam`) |
+| Trava de câmera ultra-wide na gravação | ✅ contornada (`uwcam`) — a frontal vira simples, ver [docs/uwcam.md](docs/uwcam.md) |
 | Vídeo do PC entrando como câmera | ✅ duas vias (nativa e OBS) |
 | Câmera do celular ao vivo entrando como câmera | ✅ via Iriun + OBS |
 | Vídeo sobreposto à câmera ao vivo | ✅ via OBS |
@@ -54,7 +54,8 @@ Depois de instalar o OBS, ligue o servidor websocket uma vez em
 *Ferramentas → Configurações do WebSocket*. O `camvideo.py` lê a senha sozinho.
 
 ```powershell
-cd "D:\PROJETO EMULATION\setup"
+# a partir da raiz do repositório clonado
+cd .\setup
 powershell -ExecutionPolicy Bypass -File .\01-ferramentas.ps1
 ```
 Instala JDK, Python, `websockets`, e o SDK do Android (~16 GB, demora).
@@ -107,9 +108,21 @@ PROJETO EMULATION/
 │   └── videos/            << jogue seus vídeos aqui
 ├── lentes/                app Android que inspeciona as câmeras (diagnóstico)
 ├── magisk/                os dois módulos, prontos para instalar
-├── apk/                   backup dos 4 splits do Minute 1.22.0
-└── docs/                  JSONs originais das câmeras e log de crash
+├── docs/                  JSONs originais das câmeras, log de crash
+│   └── uwcam.md           como o módulo uwcam é feito, e o que ele custa
+└── apk/                   (NÃO vem no clone — está no .gitignore)
 ```
+
+> `apk/` guardava um backup dos 4 splits do Minute 1.22.0. Fica fora do
+> repositório de propósito: é app de terceiros, e sideload não passa no PAIRIP
+> de qualquer jeito — a instalação boa é pela Play Store. Se quiser o backup,
+> crie a pasta e puxe do próprio emulador depois de instalar:
+>
+> ```bash
+> mkdir -p apk
+> adb shell pm path com.bakerdata.minute | sed 's/^package://' \
+>   | tr -d '\r' | xargs -I{} adb pull {} apk/
+> ```
 
 ---
 
@@ -132,7 +145,7 @@ Descoberta tardia: o emulador toca arquivo de vídeo direto como câmera.
 
 ```powershell
 emulator -avd MinutePlay -no-snapshot -timezone America/Sao_Paulo `
-         -camera-back "videofile:D:\seu\video.mp4" -camera-front emulated -gpu auto
+         -camera-back "videofile:C:\caminho\para\seu\video.mp4" -camera-front emulated -gpu auto
 ```
 
 Também aceita `imagefile:` e `image360:`. **Prefira isso** para vídeo simples:
@@ -142,7 +155,7 @@ Só não serve para o Minute (§6).
 ### Via OBS (necessária só para câmera ao vivo, ou vídeo + câmera juntos)
 
 ```bash
-cd "D:/PROJETO EMULATION/camvideo"
+cd camvideo    # a partir da raiz do repositório clonado
 
 python camvideo.py videos/meu.mp4              # só o vídeo, tela cheia
 python camvideo.py --live                      # só a câmera do celular
@@ -185,6 +198,14 @@ sem tamanho. O `camvideo.py --live` desativa e reativa a fonte para reconectar.
 
 **Modelo tem que valer no boot.** `resetprop` com o sistema no ar não adianta,
 o Minute já decidiu. Por isso é um módulo Magisk.
+
+**O `uwcam` troca traseira e frontal de lado.** No emulador stock, quem já vem
+como multi-camera lógica com físicas é a **frontal** — a traseira é uma câmera
+simples. O módulo aproveita o JSON da frontal para montar a traseira, e a
+frontal fica com o JSON simples da traseira. Ou seja: **a frontal perde as
+câmeras físicas**. Não afeta o Minute (só usa a traseira), mas surpreende quem
+for inspecionar a frontal depois. Detalhes e como reverter em
+[docs/uwcam.md](docs/uwcam.md).
 
 **`su` via ADB.** Não basta *Superuser Access = Apps and ADB* nem
 *Automatic Response = Grant*. Tem que ligar o botão do **[SharedUID] Shell** na

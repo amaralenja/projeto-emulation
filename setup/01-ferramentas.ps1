@@ -8,15 +8,71 @@ $SDK = "$env:LOCALAPPDATA\Android\Sdk"
 
 function Passo($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 
-Passo "Ferramentas base (JDK, Python, 7zip)"
+# O winget escreve o PATH novo no registro, mas o processo atual continua com o
+# PATH antigo. Sem recarregar, nada que foi instalado agora e visivel aqui.
+function Recarregar-Path {
+    $maquina = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $usuario = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = @($maquina, $usuario | Where-Object { $_ }) -join ";"
+}
+
+# ARMADILHA: num Windows limpo, "python" no PATH e o atalho da Microsoft Store
+# (%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe, um stub de 0 byte que abre a
+# loja). Chamar "python -m pip" logo depois do winget cai nele, e como falha de
+# .exe nativo NAO dispara o $ErrorActionPreference, o script seguia adiante sem
+# instalar o websockets -- e o camvideo.py so quebrava muito depois com
+# ModuleNotFoundError. Por isso achamos o interpretador de verdade pelo caminho.
+function Achar-Python {
+    Recarregar-Path
+    $candidatos = @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe")
+    foreach ($raiz in "$env:LOCALAPPDATA\Programs\Python", "$env:ProgramFiles") {
+        $candidatos += Get-ChildItem "$raiz\Python3*\python.exe" -ErrorAction SilentlyContinue |
+                       Sort-Object FullName -Descending | ForEach-Object { $_.FullName }
+    }
+    $candidatos += Get-Command python.exe -All -ErrorAction SilentlyContinue |
+                   ForEach-Object { $_.Source }
+
+    foreach ($c in $candidatos) {
+        if (-not $c) { continue }
+        if ($c -like "*\WindowsApps\*") { continue }          # stub da Store
+        if (-not (Test-Path $c)) { continue }
+        if ((Get-Item $c).Length -eq 0) { continue }          # stub tem 0 byte
+        return $c
+    }
+    return $null
+}
+
+Passo "Ferramentas base (JDK e Python)"
 # JDK: o sdkmanager e o javac precisam dele. Python: roda o camvideo.py.
 winget install --id EclipseAdoptium.Temurin.21.JDK -e --accept-source-agreements --accept-package-agreements --silent
 winget install --id Python.Python.3.12 -e --accept-package-agreements --silent
 
 Passo "Bibliotecas Python"
 # websockets: e por onde o camvideo.py fala com o OBS.
-python -m pip install --upgrade pip
-python -m pip install websockets
+$py = Achar-Python
+if (-not $py) {
+    Write-Host @"
+
+  Nao achei um python.exe utilizavel.
+
+  O winget pode ter pedido reinicio, ou o unico "python" do PATH e o atalho da
+  Microsoft Store. Abra um PowerShell NOVO, confira com
+
+      (Get-Command python).Source
+
+  e, se apontar para ...\WindowsApps\, desligue o alias em
+  Configuracoes > Aplicativos > Configuracoes avancadas > Aliases de execucao.
+  Depois rode este script de novo.
+"@ -ForegroundColor Red
+    exit 1
+}
+Write-Host "  usando $py"
+& $py -m pip install --upgrade pip
+& $py -m pip install websockets
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ERRO: nao deu para instalar o websockets. O camvideo.py nao vai rodar." -ForegroundColor Red
+    exit 1
+}
 
 Passo "Ferramentas de linha de comando do Android"
 $cmdlineZip = "$env:TEMP\cmdline-tools.zip"

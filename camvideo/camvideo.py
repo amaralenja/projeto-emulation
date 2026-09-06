@@ -21,9 +21,17 @@ Uso:
     python camvideo.py --status
 
 Ajustes de giro (o emulador gira o quadro pelo sensor.orientation = 90):
-    --rot 270 --flip     video vertical em pe na traseira  (padrao)
-    --rot 90  --flip     idem na frontal (ela e espelhada, inverte 180)
-    --rot-cam / --flip-cam   mesmos ajustes para a camera ao vivo
+
+    video       --rot 270  --flip     (padrao: espelhado ja vem ligado)
+                --rot 90   --flip     idem na frontal (ela espelha, inverte 180)
+                --no-flip             desliga o espelho do video
+    camera      --rot-cam 0           (padrao)
+                --flip-cam            liga o espelho da camera ao vivo
+                --no-flip-cam         desliga (padrao)
+
+`--flip` existe so para deixar a intencao explicita na linha de comando: o
+espelho do video ja vem ligado, entao passar ou nao passar da no mesmo. Quem
+muda alguma coisa e o `--no-flip`.
 """
 
 import asyncio
@@ -430,11 +438,13 @@ def ler_args(argv):
             i += 1
             cfg["rot_cam"] = int(argv[i]) % 360
         elif a in ("--flip", "-f"):
-            cfg["flip"] = True
+            cfg["flip"] = True          # ja e o padrao; aceito para ser explicito
         elif a == "--no-flip":
             cfg["flip"] = False
         elif a == "--flip-cam":
             cfg["flip_cam"] = True
+        elif a == "--no-flip-cam":
+            cfg["flip_cam"] = False
         elif a in ("--live", "-l"):
             cfg["live"] = True
         elif a == "--cam":
