@@ -152,7 +152,25 @@ def main(argv):
 
     mb = os.path.getsize(saida) / (1024 * 1024)
     print(f"\npronto: {saida}  ({mb:.1f} MB, {LARGURA}x{ALTURA})")
-    print("\nsubir o emulador com ele (caminho entre aspas, token unico):")
+
+    if " " in saida:
+        print(f"""
+  ATENCAO: esse caminho tem ESPACO, e o `videofile:` do emulador nao aceita.
+
+  A falha e silenciosa e engana: o emulador sobe, o CameraService abre o
+  dispositivo, e simplesmente nao chega frame nenhum -- o app fica travado
+  esperando. Nao adianta por entre aspas; testado com o mesmo arquivo nos dois
+  caminhos, so o sem espaco entrega imagem.
+
+  Isso morde este projeto porque a pasta se chama "PROJETO EMULATION". Copie
+  para um caminho sem espaco antes de usar, por exemplo:
+
+      copy "{saida}" "%LOCALAPPDATA%\\Temp\\cam.mp4"
+
+  (o camera/CAMERA.bat ja faz isso sozinho)""")
+        return
+
+    print("\nsubir o emulador com ele:")
     print(f'    emulator -avd MinutePlay -no-snapshot -camera-back '
           f'"videofile:{saida}" -camera-front emulated -gpu auto')
 

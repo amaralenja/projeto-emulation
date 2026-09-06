@@ -232,10 +232,30 @@ emulator -avd MinutePlay -no-snapshot -timezone America/Sao_Paulo `
 
 Também aceita `imagefile:` e `image360:`. Só não serve para o Minute (§6).
 
-> **Aspas importam.** Passe `"videofile:CAMINHO"` como um token só. Se o
-> argumento for montado por partes (ex.: array de `Start-Process`), caminho com
-> espaço quebra e o emulador morre sem mensagem — e a pasta deste projeto tem
-> espaço no nome.
+> ### ⚠️ O caminho não pode ter espaço
+>
+> **O `videofile:` do emulador não aceita espaço no caminho, e falha calado.**
+> Não é questão de aspas: o emulador sobe normalmente, o `CameraService` abre o
+> dispositivo, e simplesmente não chega frame nenhum — o app fica travado
+> esperando. Nenhuma mensagem de erro, em lugar nenhum.
+>
+> Testado com o **mesmo arquivo**, mudando só o caminho:
+>
+> | Caminho | Resultado |
+> |---|---|
+> | `C:\PROJETO EMULATION\camvideo\videos\x.mp4` | boot ok, câmera abre, **zero frames** |
+> | `C:\Users\...\Temp\x.mp4` | imagem normal |
+>
+> Isso morde este projeto sempre, porque a pasta se chama **"PROJETO
+> EMULATION"**. Copie para um caminho sem espaço antes de usar:
+>
+> ```powershell
+> copy "camvideo\videos\meu.pronto.mp4" "$env:LOCALAPPDATA\Temp\cam.mp4"
+> ```
+>
+> O `camera/CAMERA.bat` já faz isso sozinho (copia para
+> `%LOCALAPPDATA%\emulation-cam\atual.mp4`), e o `preparar.py` avisa quando a
+> saída cai num caminho com espaço.
 
 ### Via OBS — ⚠️ quebrada nas versões atuais
 

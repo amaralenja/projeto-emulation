@@ -10,3 +10,6 @@ __pycache__/
 
 # capturas temporarias
 /camvideo/*.png
+
+# videos preparados pelo camvideo/preparar.py (derivados, regeneraveis)
+*.pronto.*
