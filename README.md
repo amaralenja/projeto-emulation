@@ -167,8 +167,9 @@ PROJETO EMULATION/
 ├── setup/                 instalação do zero no PC novo
 ├── camera/CAMERA.bat      painel: escolhe a fonte da câmera e sobe o emulador
 ├── camvideo/
-│   ├── preparar.py        deixa um vídeo pronto para a via nativa (use este)
-│   ├── camvideo.py        monta a imagem no OBS — via quebrada, ver §4
+│   ├── montar.py          compõe a cena (fundo + sobreposto + texto)
+│   ├── preparar.py        só encaixa um vídeo no tamanho da câmera
+│   ├── camvideo.py        montava no OBS — via quebrada, ver §4
 │   └── videos/            << jogue seus vídeos aqui
 ├── lentes/                app Android que inspeciona as câmeras (diagnóstico)
 ├── magisk/                os dois módulos, prontos para instalar
@@ -228,6 +229,19 @@ orientação fica como estava.
 | `--modo cheio` | preenche cortando o excesso |
 | `--rot 270` | vídeo vertical em pé numa tela em pé |
 | `--espelhar` | espelha na horizontal |
+
+**Precisa compor?** O `montar.py` faz o que o OBS fazia — juntar fundo,
+sobreposto e texto — só que o resultado é um arquivo, não um sinal ao vivo:
+
+```bash
+python montar.py --fundo videos/base.mp4 --sobre logo.png --texto "AO VIVO" --instalar
+python montar.py --cor black --dur 60 --texto "aguarde" --instalar
+python montar.py --fundo base.mp4 --sobre pip.mp4 --canto cima-esquerda --escala 0.25 --instalar
+```
+
+`--instalar` já copia para `%LOCALAPPDATA%\emulation-cam\atual.mp4`, que é o
+caminho sem espaço que o `videofile:` exige. Cantos: `cima-esquerda`,
+`cima-direita`, `baixo-esquerda`, `baixo-direita`, `centro`.
 
 **Passo 2, suba com ele:**
 

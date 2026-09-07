@@ -13,6 +13,7 @@ rem caminho relativo ao .bat: a pasta pode ir pra qualquer lugar
 for %%I in ("%~dp0..") do set "RAIZ=%%~fI"
 set "BASE=%RAIZ%\camvideo"
 set "PREPARAR=%BASE%\preparar.py"
+set "MONTAR=%BASE%\montar.py"
 set "VIDEOS=%BASE%\videos"
 
 if not exist "%VIDEOS%" mkdir "%VIDEOS%"
@@ -44,25 +45,67 @@ echo    CAMERA DO EMULADOR
 echo ===========================================================
 echo.
 echo   [1] VIDEO         um video seu entra como camera traseira
-echo   [2] SINTETICA     cena 3D do emulador  ^(o Minute exige esta^)
+echo   [2] MONTAR CENA   video + algo por cima + texto, e usa como camera
+echo   [3] SINTETICA     cena 3D do emulador  ^(o Minute exige esta^)
 echo.
-echo   [3] Abrir a pasta de videos
+echo   [4] Abrir a pasta de videos
 echo   [0] Sair
 echo.
 echo   Pasta de videos: %VIDEOS%
 echo.
-echo   Camera do celular ao vivo e video sobreposto sairam do menu:
-echo   dependiam da saida virtual do DroidCam, que nao existe mais
-echo   nas versoes atuais do plugin. Ver a secao 4 do README.
+echo   Camera do celular AO VIVO saiu do menu: dependia da saida virtual
+echo   do DroidCam, que nao existe mais nas versoes atuais do plugin.
+echo   A composicao voltou pela opcao [2], mas em arquivo, nao ao vivo.
+echo   Ver a secao 4 do README.
 echo.
 set "op="
 set /p "op=Opcao: "
 
 if "%op%"=="1" goto video
-if "%op%"=="2" goto sintetica
-if "%op%"=="3" start "" "%VIDEOS%" & goto menu
+if "%op%"=="2" goto montar
+if "%op%"=="3" goto sintetica
+if "%op%"=="4" start "" "%VIDEOS%" & goto menu
 if "%op%"=="0" exit /b
 goto menu
+
+rem ------------------------------------------------------------ montar cena
+:montar
+cls
+echo --- MONTAR CENA ---
+echo.
+echo Escolha o FUNDO:
+call :escolher
+if errorlevel 1 goto menu
+set "M_FUNDO=!ESCOLHIDO!"
+
+echo.
+set "M_SOBRE="
+set "r="
+set /p "r=Por algo POR CIMA (video ou imagem)? (s/N): "
+if /i "!r!"=="S" (
+    call :escolher
+    if not errorlevel 1 set "M_SOBRE=!ESCOLHIDO!"
+)
+
+echo.
+set "M_TEXTO="
+set /p "M_TEXTO=Texto por cima (Enter para nenhum): "
+
+set "ARGS=--fundo "!M_FUNDO!""
+if defined M_SOBRE set "ARGS=!ARGS! --sobre "!M_SOBRE!""
+if defined M_TEXTO set "ARGS=!ARGS! --texto "!M_TEXTO!""
+
+echo.
+echo Montando...
+%PY% "%MONTAR%" !ARGS! --instalar -o "%VIDEOS%\cena.montado.mp4"
+if errorlevel 1 (
+    echo.
+    echo Falhou ao montar.
+    pause
+    goto menu
+)
+set "CAM=videofile:%LOCALAPPDATA%\emulation-cam\atual.mp4"
+goto subir
 
 rem ---------------------------------------------------- escolher um video
 :escolher
