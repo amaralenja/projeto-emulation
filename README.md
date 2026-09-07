@@ -167,6 +167,8 @@ PROJETO EMULATION/
 ├── setup/                 instalação do zero no PC novo
 ├── camera/CAMERA.bat      painel: escolhe a fonte da câmera e sobe o emulador
 ├── camvideo/
+│   ├── PAINEL.bat         << ABRE A JANELINHA para trocar o vídeo da câmera
+│   ├── painel.pyw         a janelinha em si
 │   ├── montar.py          compõe a cena (fundo + sobreposto + texto)
 │   ├── preparar.py        só encaixa um vídeo no tamanho da câmera
 │   ├── camvideo.py        montava no OBS — via quebrada, ver §4
@@ -193,7 +195,19 @@ PROJETO EMULATION/
 
 ## 4. Como usar
 
-### Painel
+### Trocar o vídeo da câmera — o jeito fácil
+
+Dois cliques em **`camvideo/PAINEL.bat`**. Abre uma janelinha: escolhe o vídeo
+da lista (ou de qualquer pasta), opcionalmente escreve um texto por cima, e
+clica em **USAR ESTE VÍDEO NA CAMERA**. Duplo clique no nome já aplica.
+
+Ele processa e grava em `%LOCALAPPDATA%\emulation-cam\atual.mp4`, que é o
+arquivo que o emulador lê. **Trocar esse arquivo troca o que a câmera mostra.**
+
+O emulador lê o arquivo **no boot** — se ele já estiver aberto, reinicie para a
+troca valer.
+
+### Painel do emulador
 
 Abrir **`camera/CAMERA.bat`**:
 
