@@ -378,10 +378,18 @@ classe anônima. Use a **37.0.0** (é o que o `01-ferramentas.ps1` instala).
 
 O emulador usa dois HALs de câmera diferentes:
 
-| Fonte | HAL | Tem câmeras físicas? |
+| Fonte | Tem câmeras físicas? | Mostra conteúdo seu? |
 |---|---|---|
-| `emulated` / `virtualscene` | `device@1.1/internal` | ✅ sim — lê nosso JSON |
-| `webcam0` / `videofile:` | `device@3.3/legacy` | ❌ não |
+| `emulated` | ✅ **sim** — lê nosso JSON | ❌ só a cena 3D sintética |
+| `virtualscene` | ❌ não | 🟡 só um pôster estático na parede |
+| `webcam0` / `videofile:` | ❌ não (HAL legacy) | ✅ sim |
+
+**Só o `emulated` tem as físicas** — nem mesmo o `virtualscene`, que também é
+sintético. Testado: com `-camera-back virtualscene` o `lentes` reporta *"sem
+cameras fisicas: nao e multi-camera logica"*, e o `dumpsys media.camera` não
+mostra `physicalIds`. Isso mata a ideia de usar `-virtualscene-poster` para
+enfiar uma imagem sua numa fonte que o Minute aceite: o pôster carrega, mas as
+físicas somem junto.
 
 O Minute exige uma **ultra-wide física** e grava a partir dela:
 
@@ -389,10 +397,22 @@ O Minute exige uma **ultra-wide física** e grava a partir dela:
 EgoCameraCtrl: resolveUltraWide: logical=0 ultraWide=4
 ```
 
-Câmeras físicas só existem no HAL sintético, e o HAL sintético não aceita
-conteúdo externo. Qualquer fonte com imagem real cai no HAL legacy, que não tem
-onde declarar físicas — daí o `physicals=[]` e o
-*"No ultra-wide physical camera available"*.
+Sem ela, a gravação é recusada — o log é explícito, e a mensagem na tela
+(*"Recording isn't available"*) só aparece ao apertar gravar, porque a
+**prévia funciona normalmente** em qualquer fonte:
+
+```
+resolveUltraWide: candidate id=0 fov=43.6 focals=[5.0] physicals=[]
+resolveUltraWide: ultraWide=null
+[useEgoRecorder] start error: 'No ultra-wide physical camera available'
+                             | reason: 'no-ultrawide'
+```
+
+Isso engana: dá para montar tudo, ver a imagem na prévia e só descobrir o
+problema no momento de gravar.
+
+A única fonte com físicas é a que não aceita conteúdo externo. Não há
+interseção.
 
 É arquitetura do emulador, não configuração. Na prática:
 
