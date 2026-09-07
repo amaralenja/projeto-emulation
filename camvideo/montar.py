@@ -76,7 +76,7 @@ def ler_args(argv):
     cfg = {"fundo": None, "cor": None, "dur": None, "sobre": None,
            "escala": 0.3, "canto": "baixo-direita", "texto": None,
            "texto_pos": "cima", "ajuste": "caber", "saida": None,
-           "instalar": False}
+           "instalar": False, "progresso": False}
     pares = {"--fundo": "fundo", "--cor": "cor", "--sobre": "sobre",
              "--canto": "canto", "--texto": "texto", "--texto-pos": "texto_pos",
              "--ajuste": "ajuste", "-o": "saida"}
@@ -104,6 +104,8 @@ def ler_args(argv):
                 sys.exit("--escala tem que ficar entre 0.05 e 1.0")
         elif a == "--instalar":
             cfg["instalar"] = True
+        elif a == "--progresso":
+            cfg["progresso"] = True
         else:
             sys.exit(f"opcao desconhecida: {a}")
         i += 1
@@ -127,6 +129,53 @@ def encaixe(ajuste):
                 f"crop={LARGURA}:{ALTURA}")
     return (f"scale={LARGURA}:{ALTURA}:force_original_aspect_ratio=decrease,"
             f"pad={LARGURA}:{ALTURA}:(ow-iw)/2:(oh-ih)/2:black")
+
+
+def duracao(caminho):
+    """Segundos do arquivo, via ffprobe. None se nao der para saber."""
+    ffprobe = achar("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", caminho],
+            capture_output=True, text=True, timeout=30)
+        return float(r.stdout.strip())
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def rodar_com_progresso(cmd, total):
+    """
+    Roda o ffmpeg imprimindo "PROGRESSO:<0-100>" a cada avanco, para quem
+    chamou (o painel) poder mostrar uma barra de verdade.
+
+    `-progress pipe:1` faz o ffmpeg cuspir pares chave=valor legiveis; o que
+    interessa e out_time_us (ou out_time_ms nas versoes antigas), que e quanto
+    do video ja foi codificado.
+    """
+    cmd = cmd[:1] + ["-progress", "pipe:1", "-nostats"] + cmd[1:]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, bufsize=1)
+    ultimo = -1
+    for linha in p.stdout:
+        linha = linha.strip()
+        us = None
+        if linha.startswith("out_time_us="):
+            us = linha.split("=", 1)[1]
+        elif linha.startswith("out_time_ms="):      # ffmpeg antigo: ja e us
+            us = linha.split("=", 1)[1]
+        if us and total:
+            try:
+                pct = min(100, int(float(us) / 1_000_000 / total * 100))
+            except ValueError:
+                continue
+            if pct != ultimo:
+                ultimo = pct
+                print(f"PROGRESSO:{pct}", flush=True)
+    p.wait()
+    return p.returncode
 
 
 def escapar(texto):
@@ -231,9 +280,18 @@ def main(argv):
 
     print("ffmpeg :", ffmpeg)
     print("filtro :", ";".join(partes))
-    r = subprocess.run(cmd)
-    if r.returncode != 0 or not os.path.isfile(saida):
-        sys.exit(f"ffmpeg falhou (codigo {r.returncode})")
+
+    if cfg["progresso"]:
+        total = cfg["dur"]
+        if total is None and cfg["fundo"]:
+            total = duracao(os.path.abspath(cfg["fundo"]))
+        print(f"TOTAL:{total or 0}", flush=True)
+        codigo = rodar_com_progresso(cmd, total)
+    else:
+        codigo = subprocess.run(cmd).returncode
+
+    if codigo != 0 or not os.path.isfile(saida):
+        sys.exit(f"ffmpeg falhou (codigo {codigo})")
 
     mb = os.path.getsize(saida) / (1024 * 1024)
     print(f"\npronto: {saida}  ({mb:.1f} MB, {LARGURA}x{ALTURA})")

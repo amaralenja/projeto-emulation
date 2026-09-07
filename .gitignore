@@ -13,3 +13,10 @@ __pycache__/
 
 # videos preparados pelo camvideo/preparar.py (derivados, regeneraveis)
 *.pronto.*
+
+# videos que voce joga em camvideo/videos/ sao SEUS e nao vao pro repositorio.
+# So os dois de teste ficam versionados (ja rastreados). Isso evita subir por
+# engano um arquivo pessoal e grande, como aconteceu com um .mp4 de 2,5 GB.
+/camvideo/videos/*
+!/camvideo/videos/teste.mp4
+!/camvideo/videos/teste_vertical.mp4

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -172,26 +173,63 @@ class Painel:
         if self.ocupado or not self.escolhido:
             return
         self.ocupado = True
+        self.comeco = time.time()
         self.btn.config(state="disabled", text="processando...")
+        self.prog.config(mode="indeterminate", value=0)
         self.prog.pack(fill="x", padx=12, pady=(0, 6))
         self.prog.start(12)
+        self.dizer("preparando...")
         threading.Thread(target=self._trabalho, daemon=True).start()
+
+    def _determinado(self):
+        """Sai da barra animada e passa para a de porcentagem."""
+        self.prog.stop()
+        self.prog.config(mode="determinate", maximum=100, value=0)
+
+    def _avanco(self, pct):
+        self.prog.config(value=pct)
+        passado = time.time() - self.comeco
+        if pct >= 2:
+            resta = passado * (100 - pct) / pct
+            m, s = divmod(int(resta), 60)
+            falta = f" — faltam ~{m}min {s:02d}s" if m else f" — faltam ~{s}s"
+        else:
+            falta = ""
+        self.dizer(f"convertendo... {pct}%{falta}")
 
     def _trabalho(self):
         try:
             os.makedirs(AREA, exist_ok=True)
             args = [sys.executable, MONTAR, "--fundo", self.escolhido,
                     "--ajuste", "cheio" if self.cortar.get() else "caber",
-                    "--instalar", "-o", os.path.join(AREA, "trabalho.mp4")]
+                    "--instalar", "--progresso",
+                    "-o", os.path.join(AREA, "trabalho.mp4")]
             t = self.texto.get().strip()
             if t:
                 args += ["--texto", t]
-            r = subprocess.run(args, capture_output=True, text=True,
-                               **sem_console())
-            if r.returncode != 0 or not os.path.isfile(ATUAL):
-                erro = (r.stderr or r.stdout or "").strip().splitlines()
+
+            p = subprocess.Popen(args, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True,
+                                 bufsize=1, **sem_console())
+            ultimas = []
+            for linha in p.stdout:
+                linha = linha.strip()
+                if linha.startswith("PROGRESSO:"):
+                    try:
+                        pct = int(linha.split(":", 1)[1])
+                    except ValueError:
+                        continue
+                    self.raiz.after(0, self._avanco, pct)
+                elif linha.startswith("TOTAL:"):
+                    self.raiz.after(0, self._determinado)
+                elif linha:
+                    ultimas.append(linha)
+                    del ultimas[:-6]
+            p.wait()
+
+            if p.returncode != 0 or not os.path.isfile(ATUAL):
                 self.raiz.after(0, self._fim, False,
-                                erro[-1] if erro else "falhou sem mensagem")
+                                ultimas[-1] if ultimas else "falhou sem mensagem")
             else:
                 self.raiz.after(0, self._fim, True, None)
         except Exception as e:                                  # noqa: BLE001
@@ -204,9 +242,12 @@ class Painel:
         self.btn.config(state="normal", text="USAR ESTE VIDEO NA CAMERA")
         self.mostrar_atual()
         if ok:
-            self.dizer("Pronto. Suba o emulador pelo CAMERA.bat (opcao 1), ou "
-                       "reinicie se ja estiver aberto -- ele le o arquivo no "
-                       "boot.", "#0a7")
+            levou = int(time.time() - self.comeco)
+            m, s = divmod(levou, 60)
+            quanto = f"{m}min {s:02d}s" if m else f"{s}s"
+            self.dizer(f"Pronto em {quanto}. Suba o emulador pelo CAMERA.bat "
+                       "(opcao 1), ou reinicie se ja estiver aberto -- ele le "
+                       "o arquivo no boot.", "#0a7")
         else:
             self.dizer("Nao deu: " + erro, "#c00")
 
