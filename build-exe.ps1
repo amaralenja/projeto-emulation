@@ -31,6 +31,7 @@ python -m PyInstaller `
     --add-data "$(Join-Path $raiz 'camvideo\painel.pyw');." `
     --add-data "$(Join-Path $raiz 'camvideo\shared-camera.sh');." `
     --add-data "$(Join-Path $raiz 'camvideo\web');web" `
+    --add-data "$(Join-Path $raiz 'camvideo\voice_worker.py');." `
     --hidden-import montar `
     --hidden-import tkinter `
     --hidden-import tkinter.filedialog `

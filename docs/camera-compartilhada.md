@@ -67,3 +67,41 @@ Esses dados ficam em `%LOCALAPPDATA%\emulation-cam`. Os arquivos antigos e os
 envios parciais foram preservados. As contas e seus dados não são substituídos.
 O mecanismo anterior de cópia com retomada permanece no código para
 compatibilidade, mas o painel atualizado usa a fonte compartilhada.
+
+### Velocidade de reprodução
+
+A HAL usa um relógio monotônico compartilhado para selecionar o quadro a 30 fps.
+Solicitações adicionais da prévia ou do gravador reutilizam a posição temporal;
+elas não consomem o próximo quadro. Cada thread mantém seu próprio buffer para
+evitar que outra saída altere os pixels durante a conversão. Pausar conserva o
+tempo acumulado; mudar a geração reinicia no quadro zero. Ao chegar ao fim, a
+posição volta ao começo do vídeo.
+
+O patch `patches/emulated-camera-video.patch` inclui `VideoPlaybackClock.h`.
+O teste independente pode ser executado em Linux/WSL com:
+
+```sh
+g++ -std=c++17 patches/test-video-clock.cpp -o /tmp/test-video-clock
+/tmp/test-video-clock
+```
+
+Ele cobre solicitações a 30, 60 e 120 Hz, saídas duplicadas, pausa, retomada e
+reinício. A biblioteca compilada fica no módulo `magisk/videocam`; os celulares
+existentes precisam receber essa biblioteca e reiniciar para carregar a mudança.
+
+### Repetição automática
+
+Na aba Automação, escolha **Loop contínuo — repetir até eu parar** e informe o
+nome completo da tarefa. A busca automática fica selecionada nesse modo. Os
+mesmos celulares e o mesmo vídeo são usados em todas as rodadas. Cada rodada
+reinicia os quadros do zero e mantém o limite de 29min59s.
+
+A próxima rodada só começa depois que todos confirmam o salvamento. Falhas de
+preparação, gravação ou salvamento interrompem o loop, assim como o limite diário
+de 2 horas por tarefa e conta. O contador mostra a rodada atual e quantas foram
+salvas. **Parar após salvar esta rodada** conclui a rodada sem iniciar outra;
+**Encerrar agora e salvar** interrompe a gravação atual e também encerra o loop
+(gravações com menos de um minuto continuam sujeitas ao mínimo do Minute).
+
+O loop depende do painel permanecer aberto como processo no PC; ele não é
+retomado automaticamente após desligar o computador ou reiniciar o servidor.

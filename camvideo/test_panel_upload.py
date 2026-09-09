@@ -15,12 +15,21 @@ class UploadTests(unittest.TestCase):
         self.directory=tempfile.TemporaryDirectory()
         panel.VIDEOS=self.directory.name
         panel.S.update(busy=False)
-        self.server=panel.ThreadingHTTPServer(('127.0.0.1',0),panel.H)
+        self.server=panel.PanelServer(('127.0.0.1',0),panel.H)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
 
     def tearDown(self):
         self.server.shutdown();self.server.server_close();self.thread.join()
         self.directory.cleanup()
+
+    def test_second_panel_cannot_share_listening_port(self):
+        with self.assertRaises(OSError):
+            other=panel.PanelServer(self.server.server_address,panel.H)
+            other.server_close()
+
+    def test_state_identifies_backend(self):
+        self.assertEqual(panel.snap()['backendPid'],panel.os.getpid())
+        self.assertEqual(panel.snap()['backendVersion'],5)
 
     def test_complete_upload_is_published_atomically(self):
         payload=b'video test bytes'*1000

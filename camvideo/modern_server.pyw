@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Interface HTML local para o motor do emulador."""
-import concurrent.futures, ctypes, datetime, hashlib, json, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse, webbrowser
+import concurrent.futures, ctypes, datetime, hashlib, json, mimetypes, os, re, shutil, socket, subprocess, sys, threading, time, urllib.parse, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
@@ -8,10 +8,16 @@ from camera_transfer import Transfers
 from automation import Automation
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
+from voice_manager import VoiceManager
+from product_writer import ProductWriter
+from live_voice import LiveVoice
+from tiktok_live import TikTokLive
+from panel_runtime import runtime_identity, find_running_backend
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 FROZEN=bool(getattr(sys,"frozen",False)); RES=getattr(sys,"_MEIPASS",HERE)
 APP=os.path.dirname(sys.executable) if FROZEN else HERE
+RUNTIME_ID=runtime_identity(RES,APP,sys.executable if FROZEN else None)
 PORT=int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else 8768
 WEB=os.path.join(RES,"web"); VIDEOS=os.path.join(APP,"videos")
 AREA=os.path.expandvars(r"%LOCALAPPDATA%\emulation-cam"); ATUAL=os.path.join(AREA,"atual.mp4")
@@ -53,10 +59,15 @@ SHARED=SharedCamera(AREA,os.path.dirname(os.path.dirname(P.ADB)),P.AVD_HOME,TRAN
 def update(**kw):
     with LOCK:S.update(kw)
 def snap():
-    with LOCK:return dict(S)
+    with LOCK:return dict(S,backendPid=os.getpid(),backendVersion=5)
 AUTOMATION=Automation(E,update)
 
 def devices(): return P.descobrir_celulares() or {"MinutePlay":("emulator-5554","5554")}
+VOICE=VoiceManager(AREA,RES,hidden)
+WRITER=ProductWriter(AREA)
+LIVE_VOICE=LiveVoice(VOICE,WRITER)
+TIKTOK=TikTokLive(E._adb,devices)
+
 def status(serial):
     try:
         r=E._adb(serial,"get-state",timeout=3)
@@ -159,7 +170,7 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=1,automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=4,automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return
@@ -169,7 +180,15 @@ def start_phone(n,s,p):
     if os.name=="nt" and ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) and memory.available<2300*1024**2:
         raise RuntimeError(f"RAM insuficiente para ligar {n}: {memory.available/1024**3:.1f} GiB livres. Feche outro celular ou aplicativo antes de continuar.")
     exe=os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
-    subprocess.Popen([exe,"-avd",n,"-port",p,"-memory","2048","-no-snapshot","-timezone","America/Sao_Paulo","-camera-back","emulated","-camera-front","emulated","-gpu","auto"]+SHARED.arguments(n),**hidden())
+    if not os.path.isfile(exe):
+        raise RuntimeError(f"Executável do emulador não encontrado: {exe}")
+    args=[exe,"-avd",n,"-port",str(p),"-memory","2048","-no-snapshot","-timezone","America/Sao_Paulo","-camera-back","emulated","-camera-front","emulated","-gpu","auto"]+SHARED.arguments(n)
+    log_path=os.path.join(AREA,n+"-startup.log")
+    try:
+        with open(log_path,"ab") as log:
+            subprocess.Popen(args,cwd=os.path.dirname(exe),stdin=subprocess.DEVNULL,stdout=log,stderr=log,**hidden())
+    except OSError as exc:
+        raise RuntimeError(f"Não foi possível iniciar {n} com {exe}: {exc}. Log: {log_path}") from exc
 def open_minute(s):
     r=E._adb(s,"shell","monkey","-p","com.bakerdata.minute","-c","android.intent.category.LAUNCHER","1",timeout=15)
     if r.returncode:raise RuntimeError("Minute nao abriu")
@@ -340,7 +359,8 @@ def sync(options=None):
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
         if options.get("autoNavigate",True):open_minute(s)
     AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
-                   str(options.get("taskName", "")),bool(options.get("autoNavigate",True)))
+                   str(options.get("taskName", "")),bool(options.get("autoNavigate",True)),
+                   repeat=bool(options.get("repeat",False)))
 
 
 def job(kind,fn):
@@ -375,6 +395,7 @@ def action(d):
         if MIRROR.state()["active"]:raise ValueError("Pare o espelhamento antes da gravacao automatica")
         job(a,lambda:sync(d))
     elif a=="cancel":E.cancelar_sync.set()
+    elif a=="loop_stop_after_round":AUTOMATION.request_stop_after_round()
     elif a=="adjust":
         if not snap()["task"]:raise RuntimeError("nenhuma tarefa detectada")
         E._definir_uso_tarefa(by[s][0],snap()["task"],int(d["minutes"])*60)
@@ -417,7 +438,14 @@ class H(BaseHTTPRequestHandler):
         b=open(out,"rb").read();self.send_response(200);self.send_header("Content-Type","image/jpeg");self.send_header("Cache-Control","public, max-age=86400");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
+        if path=="/api/version":return self.sendj(RUNTIME_ID)
         if path=="/api/state":return self.sendj(payload())
+        if path=="/api/voice/state":return self.sendj(dict(VOICE.snapshot(),live=LIVE_VOICE.snapshot()))
+        if path=="/api/voice/audio":
+            ident=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id",[""])[0]
+            try:q=VOICE.clip_path(ident)
+            except ValueError:return self.send_error(404)
+            return self.send_media(q) if q.is_file() and q.with_suffix('.json').is_file() else self.send_error(404)
         if path=="/media":
             q=self.video_path();return self.send_media(q) if q else self.send_error(404)
         if path=="/preview":
@@ -432,6 +460,42 @@ class H(BaseHTTPRequestHandler):
         b=open(q,"rb").read();mime={".html":"text/html",".css":"text/css",".js":"application/javascript"}.get(os.path.splitext(q)[1],"application/octet-stream")
         self.send_response(200);self.send_header("Content-Type",mime+"; charset=utf-8");self.send_header("Cache-Control","no-cache");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
     def do_POST(self):
+        if self.path=="/api/voice/action":
+            origin=self.headers.get("Origin")
+            if origin and origin != "http://"+self.headers.get("Host", ""):
+                return self.sendj({"error":"Origem não autorizada"},403)
+            try:
+                size=int(self.headers.get("Content-Length", "0"))
+                if not 0<size<=16384:return self.sendj({"error":"Requisição inválida"},400)
+                data=json.loads(self.rfile.read(size))
+                if not isinstance(data,dict):raise ValueError("Requisição inválida")
+                command=data.get("action")
+                result={"ok":True}
+                if LIVE_VOICE.snapshot()['active'] and command in {'generate','play','unload'}:
+                    raise ValueError('Pare a sessão contínua antes de usar este controle.')
+                if command=="save_openai_key":WRITER.save_key(data.get('key'))
+                elif command=="save_product":WRITER.save_product(data.get('product'))
+                elif command in {'live_prepare','live_start'}:
+                    LIVE_VOICE.start(data.get('product'),data.get('output',''),data.get('volume',.8),
+                        data.get('minutes',60),data.get('steps',32),continuous=command=='live_start')
+                elif command=="live_stop":LIVE_VOICE.stop()
+                elif command=="unload":VOICE.unload()
+                elif command=="generate":result["id"]=VOICE.generate(data.get("text"),data.get("style","natural"),data.get('steps',32))
+                elif command=="play":VOICE.play(data.get("id"),data.get("output"),data.get("volume",0.8))
+                elif command=="stop":VOICE.stop("playback")
+                elif command=="cancel_generation":VOICE.stop("generation")
+                elif command=="outputs":VOICE.refresh_outputs()
+                elif command in {"tiktok_check","tiktok_open","tiktok_store","microphone_on","microphone_off"}:
+                    if snap()["busy"]:raise ValueError("Aguarde a operação atual do painel terminar.")
+                    serial=data.get("serial", "")
+                    if command=="tiktok_check":result.update(TIKTOK.inspect(serial))
+                    elif command=="tiktok_open":result.update(TIKTOK.open(serial))
+                    elif command=="tiktok_store":result.update(TIKTOK.store(serial))
+                    else:result.update(TIKTOK.microphone(serial,command=="microphone_on"))
+                else:raise ValueError("Ação de voz inválida")
+                return self.sendj(result)
+            except (ValueError,TypeError,KeyError) as error:return self.sendj({"error":str(error)},400)
+            except Exception as error:return self.sendj({"error":str(error)},500)
         if self.path=="/api/upload":
             n=os.path.basename(urllib.parse.unquote(self.headers.get("X-Filename","video.mp4")));z=int(self.headers.get("Content-Length","0"));os.makedirs(VIDEOS,exist_ok=True)
             if not n.lower().endswith(P.EXTS):return self.sendj({"error":"formato de video invalido"},400)
@@ -463,11 +527,44 @@ class H(BaseHTTPRequestHandler):
 def open_ui():
     url=f"http://127.0.0.1:{PORT}/";edge=next((x for x in [os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")] if os.path.isfile(x)),None)
     subprocess.Popen([edge,"--app="+url,"--start-maximized"],**hidden()) if edge else webbrowser.open(url)
+class PanelServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR allows multiple processes to steal the same listener.
+    allow_reuse_address=False
+
+    def server_bind(self):
+        if os.name=="nt":
+            self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+        super().server_bind()
+
+
 def main():
+    global PORT
     if FROZEN and len(sys.argv)>1 and sys.argv[1]=="--montar":import montar;montar.main(sys.argv[2:]);return
-    try:server=ThreadingHTTPServer(("127.0.0.1",PORT),H)
-    except OSError:open_ui();return
+    # Closing the Edge window does not stop the backend. Reuse only an exact
+    # compatible version, otherwise bind a free local port and leave it intact.
+    first_port=PORT
+    existing=find_running_backend(first_port,RUNTIME_ID)
+    if existing is not None:
+        PORT=existing
+        publish_runtime()
+        if "--no-open" not in sys.argv:open_ui()
+        return
+    server=None
+    for candidate in range(first_port,first_port+8):
+        try:server=PanelServer(("127.0.0.1",candidate),H)
+        except OSError:continue
+        PORT=candidate
+        break
+    if server is None:raise RuntimeError("Não há uma porta local disponível para abrir o painel atualizado.")
+    publish_runtime()
     if "--no-open" not in sys.argv:threading.Timer(.5,open_ui).start()
     if "--abrir-tudo" in sys.argv:threading.Timer(1,lambda:job("all",open_all)).start()
     server.serve_forever()
+def publish_runtime():
+    target=os.path.join(WEB,'current-runtime.json')
+    temporary=target+'.tmp'
+    with open(temporary,'w',encoding='utf-8') as out:
+        json.dump(dict(RUNTIME_ID,url=f'http://127.0.0.1:{PORT}/'),out)
+    os.replace(temporary,target)
+
 if __name__=="__main__":main()

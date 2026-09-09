@@ -32,3 +32,6 @@ __pycache__/
 /camvideo/videos/P03_102.mp4
 /aosp-camera-hal/
 /projeto-emulation.zip
+
+camvideo/web/current-runtime.json
+camvideo/web/current-runtime.json.tmp
