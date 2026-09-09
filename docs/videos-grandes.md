@@ -1,5 +1,10 @@
 # Vídeos grandes e cópias das contas
 
+O painel atual usa [câmera compartilhada](camera-compartilhada.md), que elimina
+a cópia integral dos quadros para cada Android. As instruções sobre transferência
+com retomada abaixo documentam o mecanismo anterior; a migração das contas e
+o armazenamento de 128 GiB continuam válidos.
+
 Painel atualizado: http://127.0.0.1:8768/. O executável e o lançador do projeto
 usam essa porta. A biblioteca de vídeos é compartilhada entre o executável e
 a execução pelo Python por meio de `video-library.json` na pasta de dados.

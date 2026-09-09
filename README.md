@@ -1,5 +1,22 @@
 # Projeto Emulation
 
+## Câmera compartilhada e automação
+
+O painel agora prepara os quadros uma vez no PC e conecta essa mesma fonte
+às câmeras por pequenos discos virtuais. Não copia mais um I420 inteiro para
+cada celular. Os quadros ficam em cache para reutilização, e os celulares
+mantêm controles de reprodução independentes. As contas e os 128 GiB de
+armazenamento são preservados; a reserva padrão de RAM passou a 2 GiB.
+
+A automação procura a tarefa pelo nome, confirma as dicas, gira à esquerda,
+reinicia o vídeo e encerra ao final dele ou antes do limite de 29min59s.
+O painel mostra o resultado por celular e verifica a confirmação de salvamento.
+Veja [funcionamento, medições e limites](docs/camera-compartilhada.md).
+
+As estimativas históricas abaixo referentes ao I420 **por celular** descrevem
+o modo antigo de cópia. No modo compartilhado, os quadros ocupam espaço uma
+vez por vídeo preparado no PC, além dos dados de cada conta e suas gravações.
+
 ## Atualização v1.1.0
 
 - Cartões de celulares redesenhados, com edição dos dois nomes exibidos. A porta e o endereço ADB continuam iguais.

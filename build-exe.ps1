@@ -29,6 +29,7 @@ python -m PyInstaller `
     --add-data "$(Join-Path $raiz 'camvideo\instalar-videocam.ps1');." `
     --add-data "$(Join-Path $raiz 'camvideo\controlar-videocam.ps1');." `
     --add-data "$(Join-Path $raiz 'camvideo\painel.pyw');." `
+    --add-data "$(Join-Path $raiz 'camvideo\shared-camera.sh');." `
     --add-data "$(Join-Path $raiz 'camvideo\web');web" `
     --hidden-import montar `
     --hidden-import tkinter `

@@ -53,10 +53,10 @@ class Transfers:
         with self.lock:
             self.rows.setdefault(serial, {}).update(values)
 
-    def record(self, serial, name, total, source_size, asset_id="", confirmed=True):
+    def record(self, serial, name, total, source_size, asset_id="", confirmed=True, mode="local"):
         with self.lock:
             self.installed[serial] = {"name": name, "bytes": total, "sourceBytes": source_size,
-                                      "installedAt": time.time(), "assetId":asset_id, "confirmed":confirmed}
+                                      "installedAt": time.time(), "assetId":asset_id, "confirmed":confirmed, "mode":mode}
             self.area.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
             temporary.write_text(json.dumps(self.installed, ensure_ascii=False), encoding="utf-8")

@@ -43,9 +43,7 @@ ADB = os.path.expandvars(
 CONTROLE_ANDROID = (
     "/data/adb/modules/videocam/system/vendor/etc/config/"
     "emu_camera_control.txt")
-VIDEO_ANDROID = (
-    "/data/adb/modules/videocam/system/vendor/etc/config/"
-    "emu_camera_video.i420")
+VIDEO_ANDROID = "/vendor/etc/config/emu_camera_video.i420"
 GRAVACOES_ANDROID = "/data/user/0/com.bakerdata.minute/files/recordings"
 HISTORICO_TAREFAS = os.path.join(AREA, "controle-tarefas.json")
 LIMITE_TAREFA_SEGUNDOS = 2 * 60 * 60
@@ -519,7 +517,7 @@ class Painel:
     def _adb(serial, *args, timeout=12, check=False):
         r = subprocess.run(
             [ADB, "-s", serial, *args], capture_output=True, text=True,
-            timeout=timeout, **sem_console())
+            encoding="utf-8", errors="replace", timeout=timeout, **sem_console())
         if check and r.returncode != 0:
             detalhe = (r.stderr or r.stdout or "ADB nao respondeu").strip()
             raise RuntimeError(detalhe)
@@ -568,7 +566,7 @@ class Painel:
                 "EgoCameraPreview" not in topo.stdout):
             return None
         tamanho = self._shell_root(
-            serial, f"stat -c %s {VIDEO_ANDROID} 2>/dev/null", timeout=6)
+            serial, f"if [ -b {VIDEO_ANDROID} ]; then blockdev --getsize64 {VIDEO_ANDROID}; else stat -c %s {VIDEO_ANDROID}; fi", timeout=6)
         try:
             bytes_video = int(tamanho.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):

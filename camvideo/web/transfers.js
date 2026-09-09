@@ -1,7 +1,7 @@
 const videoProgress=document.createElement('article');
 videoProgress.className='panel';
 videoProgress.style.cssText='padding:24px;margin:0 0 24px';
-videoProgress.innerHTML='<div class="panel-heading"><h2>Importação e envio para as câmeras</h2><strong id="video-stage-percent">0%</strong></div><p id="video-stage">Aguardando</p><div class="progress"><span id="video-stage-bar"></span></div><p id="all-camera-video"></p><div id="camera-transfers"></div>';
+videoProgress.innerHTML='<div class="panel-heading"><h2>Preparação e ativação nas câmeras</h2><strong id="video-stage-percent">0%</strong></div><p id="video-stage">Aguardando</p><div class="progress"><span id="video-stage-bar"></span></div><p id="all-camera-video"></p><div id="camera-transfers"></div>';
 document.querySelector('.video-layout').before(videoProgress);
 const previousRender=render;
 render=function(state){
@@ -20,9 +20,13 @@ render=function(state){
   $('camera-transfers').innerHTML=(state.phones||[]).map(phone=>{
     const transfer=(state.transfers||{})[phone.serial];
     const installed=phone.installedVideo;
-    return `<div class="usage-row"><header><strong>${esc(phone.name)}</strong><span>${esc(phone.storage||'')} • ${phone.status==='online'?'Online':phone.status==='off'?'Desligado':'Iniciando'}</span></header><p>Na câmera: <strong>${esc(installed?.name||'Não confirmado')+(installed&&!installed.confirmed?' (aguardando confirmação)':'')}</strong>${installed?` • ${size(installed.bytes)} de quadros`:''}</p>${transfer?`<header><span>${esc(transfer.stage)} • ${esc(transfer.video)}</span><strong>${transfer.percent||0}%</strong></header><div class="mini-track"><i style="width:${transfer.percent||0}%"></i></div><small>${size(transfer.bytes)} / ${size(transfer.total)}${transfer.stage==="Enviando"&&transfer.speed?` • ${size(transfer.speed)}/s • ~${Math.ceil(transfer.eta/60)} min`:""}${transfer.error?` • ${esc(transfer.error)}`:''}</small>`:''}</div>`;
+    return `<div class="usage-row"><header><strong>${esc(phone.name)}</strong><span>${esc(phone.storage||'')} • ${phone.status==='online'?'Online':phone.status==='off'?'Desligado':'Iniciando'}</span></header><p>Na câmera: <strong>${esc(installed?.name||'Não confirmado')+(installed&&!installed.confirmed?' (aguardando confirmação)':'')}</strong>${installed?` • ${size(installed.bytes)} ${installed.mode === "shared" ? "compartilhados no PC" : "de quadros locais"}`:''}</p>${transfer?`<header><span>${esc(transfer.stage)} • ${esc(transfer.video)}</span><strong>${transfer.percent||0}%</strong></header><div class="mini-track"><i style="width:${transfer.percent||0}%"></i></div><small>${transfer.mode === "shared" ? "Fonte compartilhada • sem cópia do vídeo para o celular" : `${size(transfer.bytes)} / ${size(transfer.total)}`}${transfer.stage==="Enviando"&&transfer.speed?` • ${size(transfer.speed)}/s • ~${Math.ceil(transfer.eta/60)} min`:""}${transfer.error?` • ${esc(transfer.error)}`:''}</small>`:''}</div>`;
   }).join('');
   for(const id of ['install','install-all','add','upload'])$(id).disabled=!!state.busy||!!app.uploadProgress;
+  if(!state.sharedCameraVersion){
+    $('install').disabled=true;$('install-all').disabled=true;
+    $('video-stage').textContent='Atualização pronta: reinicie o processo do painel para ativar a câmera compartilhada. O envio antigo foi interrompido e os arquivos parciais foram preservados.';
+  }
 };
 $('upload').onchange=async event=>{
   const file=event.target.files[0];if(!file)return;
@@ -39,6 +43,6 @@ $('upload').onchange=async event=>{
   }catch(error){toast(error.message)}
   finally{app.uploadProgress=null;event.target.value='';await refresh()}
 };
-document.querySelector('.bulk-note span').textContent='“Usar em todos” prepara uma vez e envia a dois celulares por vez. Os que estavam desligados voltam a esse estado após a confirmação.';
+document.querySelector('.bulk-note span').textContent='“Usar em todos” prepara uma única fonte no PC e reinicia os celulares em grupos de dois para conectá-la às câmeras. Os quadros não são copiados para cada celular. Vídeos já preparados ficam em cache.';
 
 const transferStyles=document.createElement("style");transferStyles.textContent="#camera-transfers{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px 24px}#camera-transfers p{margin:8px 0;font-size:13px}#camera-transfers small{display:block;overflow-wrap:anywhere}.usage-row header{gap:10px}";document.head.append(transferStyles);

@@ -16,7 +16,7 @@ def configure(directory, name, gib=DEFAULT_STORAGE_GIB):
     text = path.read_text(encoding="utf-8-sig")
     for key, value in {"disk.dataPartition.size": f"{gib}G", "avd.id": name,
                        "avd.name": name, "fastboot.forceColdBoot": "yes",
-                       "fastboot.forceFastBoot": "no"}.items():
+                       "fastboot.forceFastBoot": "no", "hw.ramSize": "2048"}.items():
         pattern = rf"(?m)^{re.escape(key)}\s*=.*$"
         text = re.sub(pattern, f"{key} = {value}", text) if re.search(pattern, text) else text + f"\n{key} = {value}\n"
     path.write_text(text, encoding="utf-8")

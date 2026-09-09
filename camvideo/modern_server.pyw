@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Interface HTML local para o motor do emulador."""
-import concurrent.futures, datetime, hashlib, json, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse, webbrowser
+import concurrent.futures, ctypes, datetime, hashlib, json, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
 from camera_transfer import Transfers
+from automation import Automation
+from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -47,10 +49,13 @@ def rename_phone(serial,name,label):
 def hidden(): return P.sem_console()
 MIRROR=TouchMirror(P.ADB,hidden)
 TRANSFERS=Transfers(P.ADB,AREA,hidden)
+SHARED=SharedCamera(AREA,os.path.dirname(os.path.dirname(P.ADB)),P.AVD_HOME,TRANSFERS,RES)
 def update(**kw):
     with LOCK:S.update(kw)
 def snap():
     with LOCK:return dict(S)
+AUTOMATION=Automation(E,update)
+
 def devices(): return P.descobrir_celulares() or {"MinutePlay":("emulator-5554","5554")}
 def status(serial):
     try:
@@ -118,8 +123,21 @@ def preview_source(path,meta):
 def selected_name():
     try:return json.load(open(SELECTED,"r",encoding="utf-8")).get("name","")
     except Exception:return ""
+STATUS_CACHE={};STATUS_AT=0;STATUS_LOCK=threading.Lock()
+def panel_statuses():
+    global STATUS_CACHE,STATUS_AT
+    if time.monotonic()-STATUS_AT<5 or not STATUS_LOCK.acquire(blocking=False):return dict(STATUS_CACHE)
+    try:
+        r=subprocess.run([P.ADB,"devices"],capture_output=True,text=True,timeout=5,**hidden())
+        if r.returncode==0:
+            STATUS_CACHE={parts[0]:("online" if parts[1]=="device" else "booting") for line in r.stdout.splitlines()[1:] if len(parts:=line.split())==2}
+        STATUS_AT=time.monotonic()
+    except (OSError,subprocess.TimeoutExpired):STATUS_AT=time.monotonic()
+    finally:STATUS_LOCK.release()
+    return dict(STATUS_CACHE)
+
 def payload():
-    found=devices();ps=[{"name":n,"serial":s,"port":p,"status":status(s)} for n,(s,p) in found.items()]
+    found=devices();states=panel_statuses();ps=[{"name":n,"serial":s,"port":p,"status":states.get(s,"off")} for n,(s,p) in found.items()]
     aliases=phone_names()
     for phone in ps:
         alias=aliases.get(phone["serial"],{})
@@ -141,12 +159,17 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,**transfer_state); return x
+    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=1,automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return
+    class MemoryStatus(ctypes.Structure):
+        _fields_=[("length",ctypes.c_ulong),("load",ctypes.c_ulong)]+[(k,ctypes.c_ulonglong) for k in ("total","available","pageTotal","pageAvailable","virtualTotal","virtualAvailable","extended")]
+    memory=MemoryStatus();memory.length=ctypes.sizeof(memory)
+    if os.name=="nt" and ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) and memory.available<2300*1024**2:
+        raise RuntimeError(f"RAM insuficiente para ligar {n}: {memory.available/1024**3:.1f} GiB livres. Feche outro celular ou aplicativo antes de continuar.")
     exe=os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
-    subprocess.Popen([exe,"-avd",n,"-port",p,"-no-snapshot","-timezone","America/Sao_Paulo","-camera-back","emulated","-camera-front","emulated","-gpu","auto"],**hidden())
+    subprocess.Popen([exe,"-avd",n,"-port",p,"-memory","2048","-no-snapshot","-timezone","America/Sao_Paulo","-camera-back","emulated","-camera-front","emulated","-gpu","auto"]+SHARED.arguments(n),**hidden())
 def open_minute(s):
     r=E._adb(s,"shell","monkey","-p","com.bakerdata.minute","-c","android.intent.category.LAUNCHER","1",timeout=15)
     if r.returncode:raise RuntimeError("Minute nao abriu")
@@ -173,12 +196,14 @@ def prepare_video(name,fill):
     os.makedirs(AREA,exist_ok=True);update(message="Preparando quadros sem compressao a partir do original...",progress=1)
     duration=video_meta(src).get("duration",0)
     if duration<=0:raise RuntimeError("Nao foi possivel ler a duracao do video")
-    required=int(duration*640*360*1.5*30)+os.path.getsize(src)+512*1024*1024
+    required=int(duration*640*360*1.5*30)+512*1024*1024
     if shutil.disk_usage(AREA).free<required:raise RuntimeError(f"O PC precisa de {required/1024**3:.1f} GiB livres para preparar este video")
     ff=P.achar("ffmpeg")
     if not ff:raise RuntimeError("ffmpeg nao encontrado")
     filt="scale=640:360:force_original_aspect_ratio=increase,crop=640:360,setsar=1" if fill else "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
-    pending=RAW_READY+".partial"
+    cache_dir=os.path.join(AREA,"frame-cache");os.makedirs(cache_dir,exist_ok=True)
+    raw_path=os.path.join(cache_dir,str(time.time_ns())+".i420")
+    pending=raw_path+".partial"
     with open(os.path.join(AREA,"camera-conversion.log"),"w",encoding="utf-8") as log:
         p=subprocess.Popen([ff,"-y","-v","error","-progress","pipe:1","-nostats","-i",src,"-map","0:v:0","-vf",filt,"-r","30","-an","-pix_fmt","yuv420p","-f","rawvideo",pending],stdout=subprocess.PIPE,stderr=log,text=True,**hidden())
         for line in p.stdout:
@@ -188,24 +213,36 @@ def prepare_video(name,fill):
                     update(stage="Preparando quadros",progress=percent,message=f"Preparando quadros da camera: {percent}%")
                 except ValueError:pass
         if p.wait():raise RuntimeError("Falha na preparacao; veja camera-conversion.log")
-    os.replace(pending,RAW_READY)
-    # Preserve the original container and bytes, even when its extension is MOV.
-    update(stage="Copiando original",progress=0,message="Salvando original no PC...")
+    os.replace(pending,raw_path)
+    update(stage="Identificando vídeo",progress=0,message="Identificando o original para reutilizar os quadros...")
     copied=0;total=os.path.getsize(src);digest=hashlib.sha256()
-    with open(src,"rb") as inp,open(ATUAL+".partial","wb") as out:
+    with open(src,"rb") as inp:
         while chunk:=inp.read(8*1024**2):
-            out.write(chunk);digest.update(chunk);copied+=len(chunk);update(progress=int(copied*100/total))
-    os.replace(ATUAL+".partial",ATUAL)
-    with open(os.path.join(AREA,"prepared-video.json"),"w",encoding="utf-8") as meta:json.dump({"name":os.path.basename(name),"sha256":digest.hexdigest(),"fill":bool(fill),"sourceSize":os.path.getsize(src),"sourceMtime":os.stat(src).st_mtime_ns,"rawSize":os.path.getsize(RAW_READY)},meta)
+            digest.update(chunk);copied+=len(chunk);update(progress=int(copied*100/total))
+    data={"name":os.path.basename(name),"sha256":digest.hexdigest(),"fill":bool(fill),"sourceSize":os.path.getsize(src),"sourceMtime":os.stat(src).st_mtime_ns,"rawSize":os.path.getsize(raw_path),"rawPath":raw_path}
+    with open(cache_metadata_path(src,fill),"w",encoding="utf-8") as meta:json.dump(data,meta)
+    with open(os.path.join(AREA,"prepared-video.json"),"w",encoding="utf-8") as meta:json.dump(data,meta)
     return os.path.basename(name)
+
+def cache_metadata_path(src,fill):
+    signature=f"{os.path.abspath(src)}:{os.stat(src).st_mtime_ns}:{os.path.getsize(src)}:{bool(fill)}"
+    directory=os.path.join(AREA,"frame-cache");os.makedirs(directory,exist_ok=True)
+    return os.path.join(directory,hashlib.sha256(signature.encode()).hexdigest()+".json")
 
 def prepared_cache(src,fill):
     try:
-        with open(os.path.join(AREA,"prepared-video.json"),encoding="utf-8") as f:meta=json.load(f)
-        if (meta["name"]==os.path.basename(src) and meta["fill"]==bool(fill) and
-            meta["sourceSize"]==os.path.getsize(src) and meta["sourceMtime"]==os.stat(src).st_mtime_ns and
-            meta["rawSize"]==os.path.getsize(RAW_READY)):return meta
-    except (OSError,ValueError,KeyError):pass
+        for metadata in [cache_metadata_path(src,fill),os.path.join(AREA,"prepared-video.json")]:
+            try:
+                with open(metadata,encoding="utf-8") as f:meta=json.load(f)
+                meta.setdefault("rawPath",RAW_READY)
+                if (meta["name"]==os.path.basename(src) and meta["fill"]==bool(fill) and
+                    meta["sourceSize"]==os.path.getsize(src) and meta["sourceMtime"]==os.stat(src).st_mtime_ns and
+                    meta["rawSize"]==os.path.getsize(meta["rawPath"])):
+                    if metadata!=cache_metadata_path(src,fill):
+                        with open(cache_metadata_path(src,fill),"w",encoding="utf-8") as f:json.dump(meta,f)
+                    return meta
+            except (OSError,ValueError,KeyError):pass
+    except OSError:pass
     return None
 
 def check_camera_space(serial,name):
@@ -238,50 +275,41 @@ def install_targets(targets,name,fill):
     cache=prepared_cache(os.path.join(VIDEOS,name),fill)
     existing=TRANSFERS.snapshot()["installedVideos"]
     cache_id=(cache["sha256"]+":"+str(bool(fill))) if cache else None
-    pending_targets=[(n,s) for n,s in targets if not(cache_id and existing.get(s,{}).get("confirmed") and existing[s].get("assetId")==cache_id)]
+    pending_targets=[(n,s) for n,s in targets if not(cache_id and existing.get(s,{}).get("confirmed") and existing[s].get("assetId")==cache_id and existing[s].get("mode")=="shared")]
     if not pending_targets:
         for n,s in targets:TRANSFERS.mark(s,stage="Concluido",bytes=cache["rawSize"],total=cache["rawSize"],percent=100)
         update(busy=False,stage="Concluido",progress=100,message="Este video ja esta confirmado em todos os destinos",level="ok")
         return
-    update(stage="Verificando celulares",progress=0)
-    for n,s in targets:
-        TRANSFERS.mark(s,stage="Aguardando preparacao")
-        if (n,s) in pending_targets and status(s)=="online":check_camera_space(s,name)
-    raw_estimate=int(video_meta(os.path.join(VIDEOS,name))["duration"]*640*360*1.5*30)
-    needed=raw_estimate*(len(pending_targets)+1)+os.path.getsize(os.path.join(VIDEOS,name))+2*1024**3
-    if prepared_cache(os.path.join(VIDEOS,name),fill):needed-=raw_estimate+os.path.getsize(os.path.join(VIDEOS,name))
-    if shutil.disk_usage(AREA).free<needed:raise RuntimeError(f"O disco do PC precisa de aproximadamente {needed/1024**3:.1f} GiB livres para preparar e distribuir este video; libere espaco antes de continuar")
+    for n,s in targets:TRANSFERS.mark(s,stage="Aguardando preparação",mode="shared")
     name=prepare_video(name,fill)
-    with open(os.path.join(AREA,"prepared-video.json"),encoding="utf-8") as meta:asset_id=json.load(meta)["sha256"]+":"+str(bool(fill))
-    update(stage="Enviando",progress=0,message=f"Enviando para {len(targets)} celulares...")
+    cache=prepared_cache(os.path.join(VIDEOS,name),fill)
+    if not cache:raise RuntimeError("Os quadros preparados não foram confirmados")
+    asset_id=cache["sha256"]+":"+str(bool(fill));raw_path=cache["rawPath"]
+    update(stage="Ativando câmeras",progress=0,message=f"Ativando vídeo compartilhado em {len(targets)} celulares...")
     failures=[]
     def send(target):
         n,s=target
         was_off=status(s)=="off"
         try:
             installed=TRANSFERS.snapshot()["installedVideos"].get(s,{})
-            if installed.get("confirmed") and installed.get("assetId")==asset_id:
-                TRANSFERS.mark(s,stage="Concluido",bytes=os.path.getsize(RAW_READY),total=os.path.getsize(RAW_READY),percent=100)
+            if installed.get("confirmed") and installed.get("assetId")==asset_id and installed.get("mode")=="shared":
+                TRANSFERS.mark(s,stage="Concluido",bytes=os.path.getsize(raw_path),total=os.path.getsize(raw_path),percent=100)
                 return n,None
-            if status(s)!="online":
-                TRANSFERS.mark(s,stage="Ligando celular")
-                start_phone(n,s,dict(devices())[n][1])
-                if not wait_open(s,time.monotonic()+360):raise RuntimeError("Android nao iniciou")
-            check_camera_space(s,name)
-            TRANSFERS.send(s,RAW_READY,name,os.path.getsize(os.path.join(VIDEOS,name)),asset_id)
+            SHARED.install(n,s,dict(devices())[n][1],raw_path,name,os.path.getsize(os.path.join(VIDEOS,name)),asset_id,
+                           start_phone,lambda serial:status(serial)=="online")
             return n,None
         except Exception as exc:
             TRANSFERS.mark(s,stage="Falhou",error=str(exc));return n,str(exc)
         finally:
             if was_off and len(targets)>1:
+                E._adb(s,"shell","sync",timeout=90,check=True)
                 E._adb(s,"emu","kill",timeout=15)
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(2,len(targets))) as pool:
         futures=[pool.submit(send,target) for target in targets]
         while not all(f.done() for f in futures):
             rows=TRANSFERS.snapshot()["transfers"].values()
-            sent=sum(r.get("bytes",0) for r in rows)
-            percent=min(100,int(sent*100/(os.path.getsize(RAW_READY)*len(targets))))
-            update(progress=percent,stage="Confirmando cameras" if percent==100 else "Enviando",message=f"Distribuindo {name}: {percent}% dos bytes enviados")
+            percent=int(sum(r.get("percent",0) for r in rows)/len(targets))
+            update(progress=percent,stage="Ativando câmeras",message=f"Ativando {name}: {percent}% • um único arquivo no PC, sem copiar os quadros para cada celular")
             time.sleep(1)
         for future in futures:
             n,error=future.result()
@@ -301,54 +329,27 @@ def add_phone():
     finish_resize(s,lambda message:update(message=message))
     E._adb(s,"shell","pm","clear","com.bakerdata.minute",timeout=30);open_minute(s)
     update(busy=False,progress=100,message=n+" criado sem login no Minute.",level="ok")
-def sync():
-    E.cancelar_sync.clear();parts=[];names={};durs={};trigger=False
-    update(message="Procurando cameras prontas...",progress=1,task="",elapsed=0,total=0)
-    for n,(s,_) in devices().items():
-        d=E._camera_pronta(s)
-        if d is not None:parts.append(s);names[s]=n;durs[s]=d
-    if not parts:raise RuntimeError("abra a camera da tarefa em cada Minute")
-    if max(durs.values())-min(durs.values())>.15:raise RuntimeError("videos diferentes nos celulares")
-    total=min(durs.values());duration=total-1
-    if total<61.5:raise RuntimeError("o Minute exige pelo menos 1 minuto")
-    try:
-        gens=E._paralelo(parts,E._ler_geracao);gens={s:g+1 for s,g in gens.items()}
-        E._paralelo(parts,lambda s:E._escrever_controle(s,"pause",gens[s]))
-        before=E._paralelo(parts,E._pastas_gravacao);E._paralelo(parts,E._tocar_botao_gravacao);trigger=True
-        end=time.monotonic()+18;sessions=E._paralelo(parts,lambda s:E._esperar_gravacao(s,before[s],end))
-        tasks=E._paralelo(parts,lambda s:E._detectar_tarefa_sessao(s,sessions[s]))
-        if len({x[0] for x in tasks.values()})!=1:
-            E._paralelo(parts,E._tocar_botao_gravacao);E._paralelo(parts,E._confirmar_descarte_curto);trigger=False;raise RuntimeError("celulares em tarefas diferentes")
-        task=next(iter(tasks.values()))[1];update(task=task,message="Tarefa detectada: "+task)
-        blocked=[]
-        for s in parts:
-            used=E._uso_tarefa(names[s],tasks[s][1])
-            if used+duration>P.LIMITE_TAREFA_SEGUNDOS+.01:blocked.append(names[s]+": "+E._horas_minutos(max(0,P.LIMITE_TAREFA_SEGUNDOS-used))+" restantes")
-        if blocked:
-            E._paralelo(parts,E._tocar_botao_gravacao);E._paralelo(parts,E._confirmar_descarte_curto);trigger=False;raise RuntimeError("limite de 2h para "+task+". "+"; ".join(blocked))
-        E._paralelo(parts,lambda s:E._escrever_controle(s,"play",gens[s]));t=time.monotonic()
-        while not E.cancelar_sync.is_set():
-            e=time.monotonic()-t;update(elapsed=min(e,total),total=total,progress=min(99,int(e/duration*100)),message="Gravando "+task+"...")
-            if e>=duration:break
-            time.sleep(.1)
-        if E.cancelar_sync.is_set():raise InterruptedError()
-        E._paralelo(parts,E._tocar_botao_gravacao);trigger=False;update(message="Salvando em todos...",progress=99)
-        saved=E._paralelo(parts,lambda s:E._salvar_minute(s))
-        for s in parts:
-            if saved[s]:E._somar_uso_tarefa(names[s],tasks[s][1],duration)
-        update(busy=False,progress=100,message=task+": salvo em todos.",level="ok")
-    except:
-        if trigger:
-            try:E._paralelo(parts,E._tocar_botao_gravacao)
-            except:pass
-        raise
+def sync(options=None):
+    options=options or {}
+    targets=devices()
+    if options.get("scope")=="online":
+        targets={n:(s,p) for n,(s,p) in targets.items() if status(s)=="online"}
+    def prepare(n,s,p):
+        if status(s)!="online":
+            start_phone(n,s,p)
+            if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
+        if options.get("autoNavigate",True):open_minute(s)
+    AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
+                   str(options.get("taskName", "")),bool(options.get("autoNavigate",True)))
+
+
 def job(kind,fn):
     with LOCK:
         if S["busy"]:raise RuntimeError("ja existe uma operacao em andamento")
         S.update(busy=True,level="info",progress=0,stage="Iniciando",operation=kind)
     def work():
         try:fn()
-        except InterruptedError:update(busy=False,level="warn",message="Cancelado sem salvar.")
+        except InterruptedError:update(busy=False,level="warn",message="Automação interrompida; confira os resultados por celular.")
         except Exception as x:update(busy=False,level="error",message=str(x))
     threading.Thread(target=work,daemon=True).start()
 
@@ -362,7 +363,9 @@ def action(d):
     elif a=="rename":rename_phone(s,d.get("name",""),d.get("label",""))
     elif a=="all_start":job(a,open_all)
     elif a=="start":n,p=by[s];start_phone(n,s,p)
-    elif a=="stop":E._adb(s,"emu","kill",timeout=8)
+    elif a=="stop":
+        E._adb(s,"shell","sync",timeout=90,check=True)
+        E._adb(s,"emu","kill",timeout=8)
     elif a=="minute":open_minute(s)
     elif a=="control":video_control(s,d["control"])
     elif a=="install":job(a,lambda:install_video(s,d["video"],d.get("fill",False)))
@@ -370,7 +373,7 @@ def action(d):
     elif a=="add":job(a,add_phone)
     elif a=="sync":
         if MIRROR.state()["active"]:raise ValueError("Pare o espelhamento antes da gravacao automatica")
-        job(a,sync)
+        job(a,lambda:sync(d))
     elif a=="cancel":E.cancelar_sync.set()
     elif a=="adjust":
         if not snap()["task"]:raise RuntimeError("nenhuma tarefa detectada")
