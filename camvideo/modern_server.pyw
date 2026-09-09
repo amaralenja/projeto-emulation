@@ -3,6 +3,7 @@
 import concurrent.futures, datetime, hashlib, json, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
+from mirror import TouchMirror
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 FROZEN=bool(getattr(sys,"frozen",False)); RES=getattr(sys,"_MEIPASS",HERE)
@@ -14,8 +15,27 @@ P=SourceFileLoader("engine",os.path.join(RES,"painel.pyw")).load_module()
 E=object.__new__(P.Painel); E.cancelar_sync=threading.Event(); E.lock_historico=threading.Lock()
 LOCK=threading.Lock(); S={"busy":False,"message":"Sistema pronto.","level":"ok","progress":0,"elapsed":0,"total":0,"task":""}
 META_CACHE={}; PROXY_JOBS=set(); PROXY_LOCK=threading.Lock()
+PHONE_NAMES=os.path.join(AREA,"phone-names.json")
+PHONE_NAMES_LOCK=threading.Lock()
+
+def phone_names():
+    try:
+        with open(PHONE_NAMES,encoding="utf-8") as f:return json.load(f)
+    except (OSError,ValueError):return {}
+
+def rename_phone(serial,name,label):
+    if serial not in {v[0] for v in devices().values()}:raise ValueError("Celular desconhecido")
+    name=str(name).strip();label=str(label).strip()
+    if not name or len(name)>60 or len(label)>60:raise ValueError("Informe um nome de 1 a 60 caracteres; identificacao de ate 60 caracteres")
+    if any(ord(c)<32 for c in name+label):raise ValueError("Nome invalido")
+    with PHONE_NAMES_LOCK:
+        data=phone_names();data[serial]={"name":name,"label":label}
+        os.makedirs(AREA,exist_ok=True)
+        with open(PHONE_NAMES+".tmp","w",encoding="utf-8") as f:json.dump(data,f,ensure_ascii=False)
+        os.replace(PHONE_NAMES+".tmp",PHONE_NAMES)
 
 def hidden(): return P.sem_console()
+MIRROR=TouchMirror(P.ADB,hidden)
 def update(**kw):
     with LOCK:S.update(kw)
 def snap():
@@ -89,12 +109,18 @@ def selected_name():
     except Exception:return ""
 def payload():
     found=devices();ps=[{"name":n,"serial":s,"port":p,"status":status(s)} for n,(s,p) in found.items()]
+    aliases=phone_names()
+    for phone in ps:
+        alias=aliases.get(phone["serial"],{})
+        phone["avd"]=phone["name"]
+        phone["name"]=alias.get("name") or phone["name"]
+        phone["label"]=alias.get("label") or phone["serial"]
     os.makedirs(VIDEOS,exist_ok=True); vs=[]
     for n in sorted(os.listdir(VIDEOS),key=str.casefold):
         q=os.path.join(VIDEOS,n)
         if os.path.isfile(q) and n.lower().endswith(P.EXTS) and not os.path.splitext(n)[0].endswith((".pronto",".montado")):
             meta=video_meta(q);vs.append({"name":n,"size":os.path.getsize(q),**meta,"media":"/media?name="+urllib.parse.quote(n),"thumb":"/api/thumb?name="+urllib.parse.quote(n),**preview_source(q,meta)})
-    x=snap(); x.update(phones=ps,videos=vs,current=os.path.getsize(ATUAL) if os.path.isfile(ATUAL) else 0,currentName=selected_name(),analytics=analytics(list(found))); return x
+    x=snap(); x.update(phones=ps,videos=vs,current=os.path.getsize(ATUAL) if os.path.isfile(ATUAL) else 0,currentName=selected_name(),analytics=analytics(list(found)),mirror=MIRROR.state()); return x
 def start_phone(n,s,p):
     if status(s)!="off":return
     exe=os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
@@ -119,30 +145,51 @@ def video_control(s,a):
 def prepare_video(name,fill):
     src=os.path.join(VIDEOS,os.path.basename(name))
     if not os.path.isfile(src):raise RuntimeError("video nao encontrado")
-    os.makedirs(AREA,exist_ok=True);update(message="Convertendo video...",progress=1)
-    cmd=([sys.executable,"--montar"] if FROZEN else [sys.executable,os.path.join(RES,"montar.py")])+["--fundo",src,"--ajuste","cheio" if fill else "caber","--instalar","--progresso","-o",os.path.join(AREA,"trabalho.mp4")]
-    p=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,**hidden())
-    for line in p.stdout:
-        if line.startswith("PROGRESSO:"):
-            try:update(progress=min(78,int(int(line.split(":")[1])*.78)),message=line.strip().replace("PROGRESSO:","Preparando video: ")+"%")
-            except:pass
-    if p.wait():raise RuntimeError("falha ao converter video")
-    update(progress=79,message="Gerando formato da camera uma unica vez...")
+    os.makedirs(AREA,exist_ok=True);update(message="Preparando quadros sem compressao a partir do original...",progress=1)
+    duration=video_meta(src).get("duration",0)
+    if duration<=0:raise RuntimeError("Nao foi possivel ler a duracao do video")
+    required=int(duration*640*360*1.5*30)+os.path.getsize(src)+512*1024*1024
+    if shutil.disk_usage(AREA).free<required:raise RuntimeError(f"O PC precisa de {required/1024**3:.1f} GiB livres para preparar este video")
     ff=P.achar("ffmpeg")
     if not ff:raise RuntimeError("ffmpeg nao encontrado")
-    r=subprocess.run([ff,"-y","-i",ATUAL,"-vf","scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:black,setsar=1","-r","30","-an","-pix_fmt","yuv420p","-f","rawvideo",RAW_READY],capture_output=True,timeout=7200,**hidden())
-    if r.returncode or not os.path.isfile(RAW_READY):raise RuntimeError("falha ao gerar o video da camera")
+    filt="scale=640:360:force_original_aspect_ratio=increase,crop=640:360,setsar=1" if fill else "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+    pending=RAW_READY+".partial"
+    with open(os.path.join(AREA,"camera-conversion.log"),"w",encoding="utf-8") as log:
+        p=subprocess.Popen([ff,"-y","-v","error","-progress","pipe:1","-nostats","-i",src,"-map","0:v:0","-vf",filt,"-r","30","-an","-pix_fmt","yuv420p","-f","rawvideo",pending],stdout=subprocess.PIPE,stderr=log,text=True,**hidden())
+        for line in p.stdout:
+            if line.startswith("out_time_us="):
+                try:
+                    percent=min(80,int(float(line.split("=",1)[1])/1e6/duration*80))
+                    update(progress=percent,message=f"Preparando quadros da camera: {percent*100//80}%")
+                except ValueError:pass
+        if p.wait():raise RuntimeError("Falha na preparacao; veja camera-conversion.log")
+    os.replace(pending,RAW_READY)
+    # Preserve the original container and bytes, even when its extension is MOV.
+    shutil.copyfile(src,ATUAL+".partial");os.replace(ATUAL+".partial",ATUAL)
     return os.path.basename(name)
+
+def check_camera_space(serial,name):
+    src=os.path.join(VIDEOS,os.path.basename(name))
+    duration=video_meta(src).get("duration",0)
+    if duration<=0:raise RuntimeError("Nao foi possivel ler o video")
+    required=int(duration*640*360*1.5*30)+256*1024*1024
+    result=E._adb(serial,"shell","df","-k","/data",timeout=15)
+    rows=result.stdout.strip().splitlines()
+    try:free=int(rows[-1].split()[3])*1024
+    except (IndexError,ValueError):raise RuntimeError("Nao foi possivel conferir o espaco do celular")
+    if free<required:raise RuntimeError(f"{serial}: video completo precisa de {required/1024**3:.1f} GiB livres; disponivel {free/1024**3:.1f} GiB. Aumente o armazenamento do emulador antes de enviar.")
 def push_ready(s):
     subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",os.path.join(RES,"instalar-videocam.ps1"),"-Video",RAW_READY,"-Serial",s,"-I420Pronto"],check=True,**hidden())
 def remember_video(name):
     with open(SELECTED,"w",encoding="utf-8") as f:json.dump({"name":os.path.basename(name)},f,ensure_ascii=False)
 def install_video(s,name,fill):
+    check_camera_space(s,name)
     name=prepare_video(name,fill);update(progress=82,message="Enviando para a camera...");push_ready(s);remember_video(name)
     update(busy=False,progress=100,message="Video instalado; Android reiniciando.",level="ok")
 def install_video_all(name,fill):
     targets=[(n,s) for n,(s,_) in devices().items() if status(s)=="online"]
     if not targets:raise RuntimeError("nenhum celular online")
+    for _,serial in targets:check_camera_space(serial,name)
     name=prepare_video(name,fill);done=0;failures=[];update(progress=82,message=f"Enviando para {len(targets)} celulares...")
     def send(target):
         n,s=target
@@ -228,7 +275,13 @@ def job(kind,fn):
     threading.Thread(target=work,daemon=True).start()
 def action(d):
     a=d.get("action");s=d.get("serial","");by={v[0]:(n,v[1]) for n,v in devices().items()}
-    if a=="all_start":job(a,open_all)
+    if a=="mirror_stop":MIRROR.stop()
+    elif a=="mirror_start":
+        if snap()["busy"]:raise ValueError("Aguarde a operacao atual terminar")
+        if s not in by or status(s)!="online":raise ValueError("Selecione um celular ligado")
+        MIRROR.start(s,[serial for serial in by if serial!=s and status(serial)=="online"])
+    elif a=="rename":rename_phone(s,d.get("name",""),d.get("label",""))
+    elif a=="all_start":job(a,open_all)
     elif a=="start":n,p=by[s];start_phone(n,s,p)
     elif a=="stop":E._adb(s,"emu","kill",timeout=8)
     elif a=="minute":open_minute(s)
@@ -236,7 +289,9 @@ def action(d):
     elif a=="install":job(a,lambda:install_video(s,d["video"],d.get("fill",False)))
     elif a=="install_all":job(a,lambda:install_video_all(d["video"],d.get("fill",False)))
     elif a=="add":job(a,add_phone)
-    elif a=="sync":job(a,sync)
+    elif a=="sync":
+        if MIRROR.state()["active"]:raise ValueError("Pare o espelhamento antes da gravacao automatica")
+        job(a,sync)
     elif a=="cancel":E.cancelar_sync.set()
     elif a=="adjust":
         if not snap()["task"]:raise RuntimeError("nenhuma tarefa detectada")

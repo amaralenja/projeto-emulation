@@ -1,5 +1,13 @@
 # Projeto Emulation
 
+## Atualização v1.1.0
+
+- Cartões de celulares redesenhados, com edição dos dois nomes exibidos. A porta e o endereço ADB continuam iguais.
+- Opção persistente para silenciar a prévia no painel.
+- Espelhamento de toques e arrastos da janela principal para os outros emuladores ligados. Requer root; repete o gesto após soltar o mouse, sem garantia de simultaneidade exata. Digitação e multitoque não estão incluídos. A validação com emuladores reais ainda está pendente.
+- Preparação da câmera diretamente a partir do original, sem recompressão MP4 intermediária. O original é preservado. A HAL atual continua usando I420 sem áudio em **640×360 a 30 fps**; isso não preserva a resolução 4K da fonte.
+- Verificação de espaço antes de preparar o vídeo: um vídeo de 31min24s ocupa aproximadamente **18,2 GiB** em I420 dentro de cada celular, independentemente do tamanho do arquivo comprimido de origem. Um emulador configurado com 8 GB não comporta esse vídeo. O painel informa o espaço necessário antes de iniciar.
+
 Rodar o app **Minute** (`com.bakerdata.minute`) num emulador Android com a câmera
 funcionando, e usar a câmera do emulador como saída para vídeos e para a câmera
 do celular ao vivo.

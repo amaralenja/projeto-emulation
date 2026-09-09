@@ -1,4 +1,29 @@
 const app={state:{},phone:"",video:"",view:localStorage.getItem("emulation-view")||"dashboard",phoneHash:"",videoHash:"",preview:""};
+
+// Keep playback audio preference across video changes and panel reloads.
+function setupPlaybackMute(){
+  const player=document.getElementById("preview");
+  const label=document.createElement("label");
+  label.className="check";
+  label.innerHTML='<input id="playback-muted" type="checkbox"><span></span>Reproduzir no mudo';
+  document.querySelector(".install-box").prepend(label);
+  const toggle=label.querySelector("input");
+  const saved=localStorage.getItem("emulation-playback-muted")==="true";
+  player.defaultMuted=saved;
+  player.muted=saved;
+  toggle.checked=saved;
+  toggle.addEventListener("change",()=>{
+    player.muted=toggle.checked;
+    player.defaultMuted=toggle.checked;
+    localStorage.setItem("emulation-playback-muted",String(toggle.checked));
+  });
+  player.addEventListener("volumechange",()=>{
+    toggle.checked=player.muted;
+    player.defaultMuted=player.muted;
+    localStorage.setItem("emulation-playback-muted",String(player.muted));
+  });
+}
+setupPlaybackMute();
 const $=id=>document.getElementById(id);const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function icons(){if(window.lucide)window.lucide.createIcons({attrs:{"stroke-width":1.8}})}
 function formatTime(seconds,compact=false){seconds=Math.max(0,Number(seconds)||0);const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60);return compact?`${h}h ${String(m).padStart(2,"0")}min`:`${String(Math.floor(seconds/60)).padStart(2,"0")}:${(seconds%60).toFixed(1).padStart(4,"0")}`}
