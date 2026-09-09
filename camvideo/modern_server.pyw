@@ -4,13 +4,23 @@ import concurrent.futures, datetime, hashlib, json, mimetypes, os, re, shutil, s
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
+from camera_transfer import Transfers
+from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 FROZEN=bool(getattr(sys,"frozen",False)); RES=getattr(sys,"_MEIPASS",HERE)
 APP=os.path.dirname(sys.executable) if FROZEN else HERE
+PORT=int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else 8768
 WEB=os.path.join(RES,"web"); VIDEOS=os.path.join(APP,"videos")
 AREA=os.path.expandvars(r"%LOCALAPPDATA%\emulation-cam"); ATUAL=os.path.join(AREA,"atual.mp4")
 SELECTED=os.path.join(AREA,"video-selecionado.json"); THUMBS=os.path.join(AREA,"previews"); RAW_READY=os.path.join(AREA,"emu_camera_video.i420")
+LIBRARY_CONFIG=os.path.join(AREA,"video-library.json")
+try:
+    with open(LIBRARY_CONFIG,encoding="utf-8") as f:library_path=json.load(f)["path"]
+    if os.path.isdir(library_path):VIDEOS=os.path.abspath(library_path)
+except (OSError,ValueError,KeyError,TypeError):pass
+os.makedirs(AREA,exist_ok=True)
+with open(LIBRARY_CONFIG,"w",encoding="utf-8") as f:json.dump({"path":VIDEOS},f)
 P=SourceFileLoader("engine",os.path.join(RES,"painel.pyw")).load_module()
 E=object.__new__(P.Painel); E.cancelar_sync=threading.Event(); E.lock_historico=threading.Lock()
 LOCK=threading.Lock(); S={"busy":False,"message":"Sistema pronto.","level":"ok","progress":0,"elapsed":0,"total":0,"task":""}
@@ -36,6 +46,7 @@ def rename_phone(serial,name,label):
 
 def hidden(): return P.sem_console()
 MIRROR=TouchMirror(P.ADB,hidden)
+TRANSFERS=Transfers(P.ADB,AREA,hidden)
 def update(**kw):
     with LOCK:S.update(kw)
 def snap():
@@ -120,7 +131,18 @@ def payload():
         q=os.path.join(VIDEOS,n)
         if os.path.isfile(q) and n.lower().endswith(P.EXTS) and not os.path.splitext(n)[0].endswith((".pronto",".montado")):
             meta=video_meta(q);vs.append({"name":n,"size":os.path.getsize(q),**meta,"media":"/media?name="+urllib.parse.quote(n),"thumb":"/api/thumb?name="+urllib.parse.quote(n),**preview_source(q,meta)})
-    x=snap(); x.update(phones=ps,videos=vs,current=os.path.getsize(ATUAL) if os.path.isfile(ATUAL) else 0,currentName=selected_name(),analytics=analytics(list(found)),mirror=MIRROR.state()); return x
+    transfer_state=TRANSFERS.snapshot()
+    installed=transfer_state["installedVideos"]
+    for phone in ps:
+        phone["installedVideo"]=installed.get(phone["serial"])
+        try:
+            cfg=open(os.path.join(P.AVD_HOME,phone["avd"]+".avd","config.ini"),encoding="utf-8-sig").read()
+            phone["storage"]=re.search(r"(?m)^disk.dataPartition.size\s*=\s*(.*)",cfg).group(1).strip()
+        except (OSError,AttributeError):phone["storage"]="Desconhecido"
+    known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
+    common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
+    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,**transfer_state); return x
+
 def start_phone(n,s,p):
     if status(s)!="off":return
     exe=os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
@@ -145,6 +167,9 @@ def video_control(s,a):
 def prepare_video(name,fill):
     src=os.path.join(VIDEOS,os.path.basename(name))
     if not os.path.isfile(src):raise RuntimeError("video nao encontrado")
+    if prepared_cache(src,fill):
+        update(stage="Quadros prontos",progress=100,message="Reutilizando os quadros ja preparados")
+        return os.path.basename(name)
     os.makedirs(AREA,exist_ok=True);update(message="Preparando quadros sem compressao a partir do original...",progress=1)
     duration=video_meta(src).get("duration",0)
     if duration<=0:raise RuntimeError("Nao foi possivel ler a duracao do video")
@@ -159,14 +184,29 @@ def prepare_video(name,fill):
         for line in p.stdout:
             if line.startswith("out_time_us="):
                 try:
-                    percent=min(80,int(float(line.split("=",1)[1])/1e6/duration*80))
-                    update(progress=percent,message=f"Preparando quadros da camera: {percent*100//80}%")
+                    percent=min(99,int(float(line.split("=",1)[1])/1e6/duration*100))
+                    update(stage="Preparando quadros",progress=percent,message=f"Preparando quadros da camera: {percent}%")
                 except ValueError:pass
         if p.wait():raise RuntimeError("Falha na preparacao; veja camera-conversion.log")
     os.replace(pending,RAW_READY)
     # Preserve the original container and bytes, even when its extension is MOV.
-    shutil.copyfile(src,ATUAL+".partial");os.replace(ATUAL+".partial",ATUAL)
+    update(stage="Copiando original",progress=0,message="Salvando original no PC...")
+    copied=0;total=os.path.getsize(src);digest=hashlib.sha256()
+    with open(src,"rb") as inp,open(ATUAL+".partial","wb") as out:
+        while chunk:=inp.read(8*1024**2):
+            out.write(chunk);digest.update(chunk);copied+=len(chunk);update(progress=int(copied*100/total))
+    os.replace(ATUAL+".partial",ATUAL)
+    with open(os.path.join(AREA,"prepared-video.json"),"w",encoding="utf-8") as meta:json.dump({"name":os.path.basename(name),"sha256":digest.hexdigest(),"fill":bool(fill),"sourceSize":os.path.getsize(src),"sourceMtime":os.stat(src).st_mtime_ns,"rawSize":os.path.getsize(RAW_READY)},meta)
     return os.path.basename(name)
+
+def prepared_cache(src,fill):
+    try:
+        with open(os.path.join(AREA,"prepared-video.json"),encoding="utf-8") as f:meta=json.load(f)
+        if (meta["name"]==os.path.basename(src) and meta["fill"]==bool(fill) and
+            meta["sourceSize"]==os.path.getsize(src) and meta["sourceMtime"]==os.stat(src).st_mtime_ns and
+            meta["rawSize"]==os.path.getsize(RAW_READY)):return meta
+    except (OSError,ValueError,KeyError):pass
+    return None
 
 def check_camera_space(serial,name):
     src=os.path.join(VIDEOS,os.path.basename(name))
@@ -178,51 +218,87 @@ def check_camera_space(serial,name):
     try:free=int(rows[-1].split()[3])*1024
     except (IndexError,ValueError):raise RuntimeError("Nao foi possivel conferir o espaco do celular")
     if free<required:raise RuntimeError(f"{serial}: video completo precisa de {required/1024**3:.1f} GiB livres; disponivel {free/1024**3:.1f} GiB. Aumente o armazenamento do emulador antes de enviar.")
-def push_ready(s):
-    subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",os.path.join(RES,"instalar-videocam.ps1"),"-Video",RAW_READY,"-Serial",s,"-I420Pronto"],check=True,**hidden())
 def remember_video(name):
     with open(SELECTED,"w",encoding="utf-8") as f:json.dump({"name":os.path.basename(name)},f,ensure_ascii=False)
+
 def install_video(s,name,fill):
-    check_camera_space(s,name)
-    name=prepare_video(name,fill);update(progress=82,message="Enviando para a camera...");push_ready(s);remember_video(name)
-    update(busy=False,progress=100,message="Video instalado; Android reiniciando.",level="ok")
+    targets=[(n,s) for n,(serial,_) in devices().items() if serial==s]
+    if not targets:raise RuntimeError("Selecione um celular valido")
+    install_targets(targets,name,fill)
+
 def install_video_all(name,fill):
-    targets=[(n,s) for n,(s,_) in devices().items() if status(s)=="online"]
-    if not targets:raise RuntimeError("nenhum celular online")
-    for _,serial in targets:check_camera_space(serial,name)
-    name=prepare_video(name,fill);done=0;failures=[];update(progress=82,message=f"Enviando para {len(targets)} celulares...")
+    targets=[(n,s) for n,(s,_) in devices().items()]
+    if not targets:raise RuntimeError("nenhum celular configurado")
+    install_targets(targets,name,fill)
+
+def install_targets(targets,name,fill):
+    name=os.path.basename(name)
+    aliases=phone_names()
+    TRANSFERS.reset([(aliases.get(s,{}).get("name") or n,s) for n,s in targets],name)
+    cache=prepared_cache(os.path.join(VIDEOS,name),fill)
+    existing=TRANSFERS.snapshot()["installedVideos"]
+    cache_id=(cache["sha256"]+":"+str(bool(fill))) if cache else None
+    pending_targets=[(n,s) for n,s in targets if not(cache_id and existing.get(s,{}).get("confirmed") and existing[s].get("assetId")==cache_id)]
+    if not pending_targets:
+        for n,s in targets:TRANSFERS.mark(s,stage="Concluido",bytes=cache["rawSize"],total=cache["rawSize"],percent=100)
+        update(busy=False,stage="Concluido",progress=100,message="Este video ja esta confirmado em todos os destinos",level="ok")
+        return
+    update(stage="Verificando celulares",progress=0)
+    for n,s in targets:
+        TRANSFERS.mark(s,stage="Aguardando preparacao")
+        if (n,s) in pending_targets and status(s)=="online":check_camera_space(s,name)
+    raw_estimate=int(video_meta(os.path.join(VIDEOS,name))["duration"]*640*360*1.5*30)
+    needed=raw_estimate*(len(pending_targets)+1)+os.path.getsize(os.path.join(VIDEOS,name))+2*1024**3
+    if prepared_cache(os.path.join(VIDEOS,name),fill):needed-=raw_estimate+os.path.getsize(os.path.join(VIDEOS,name))
+    if shutil.disk_usage(AREA).free<needed:raise RuntimeError(f"O disco do PC precisa de aproximadamente {needed/1024**3:.1f} GiB livres para preparar e distribuir este video; libere espaco antes de continuar")
+    name=prepare_video(name,fill)
+    with open(os.path.join(AREA,"prepared-video.json"),encoding="utf-8") as meta:asset_id=json.load(meta)["sha256"]+":"+str(bool(fill))
+    update(stage="Enviando",progress=0,message=f"Enviando para {len(targets)} celulares...")
+    failures=[]
     def send(target):
         n,s=target
-        try:push_ready(s);return n,None
-        except Exception as exc:return n,str(exc)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(targets))) as pool:
+        was_off=status(s)=="off"
+        try:
+            installed=TRANSFERS.snapshot()["installedVideos"].get(s,{})
+            if installed.get("confirmed") and installed.get("assetId")==asset_id:
+                TRANSFERS.mark(s,stage="Concluido",bytes=os.path.getsize(RAW_READY),total=os.path.getsize(RAW_READY),percent=100)
+                return n,None
+            if status(s)!="online":
+                TRANSFERS.mark(s,stage="Ligando celular")
+                start_phone(n,s,dict(devices())[n][1])
+                if not wait_open(s,time.monotonic()+360):raise RuntimeError("Android nao iniciou")
+            check_camera_space(s,name)
+            TRANSFERS.send(s,RAW_READY,name,os.path.getsize(os.path.join(VIDEOS,name)),asset_id)
+            return n,None
+        except Exception as exc:
+            TRANSFERS.mark(s,stage="Falhou",error=str(exc));return n,str(exc)
+        finally:
+            if was_off and len(targets)>1:
+                E._adb(s,"emu","kill",timeout=15)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(2,len(targets))) as pool:
         futures=[pool.submit(send,target) for target in targets]
-        for future in concurrent.futures.as_completed(futures):
-            n,error=future.result();done+=1
-            if error:failures.append(n)
-            update(progress=82+int(done/len(targets)*18),message=f"Instalando: {done} de {len(targets)} celulares...")
+        while not all(f.done() for f in futures):
+            rows=TRANSFERS.snapshot()["transfers"].values()
+            sent=sum(r.get("bytes",0) for r in rows)
+            percent=min(100,int(sent*100/(os.path.getsize(RAW_READY)*len(targets))))
+            update(progress=percent,stage="Confirmando cameras" if percent==100 else "Enviando",message=f"Distribuindo {name}: {percent}% dos bytes enviados")
+            time.sleep(1)
+        for future in futures:
+            n,error=future.result()
+            if error:failures.append(n+": "+error)
     remember_video(name)
     if failures:raise RuntimeError(f"instalado em {len(targets)-len(failures)} de {len(targets)}; falhou: "+", ".join(failures))
-    update(busy=False,progress=100,message=f"Video instalado nos {len(targets)} celulares; reiniciando Android.",level="ok")
+    update(busy=False,stage="Concluido",progress=100,message=f"{name} instalado e confirmado nos {len(targets)} celulares.",level="ok")
+
 def add_phone():
-    ds=devices(); idx=max(P.indice_minuteplay(n) for n in ds)+1;n="MinutePlay"+str(idx);port=str(5554+(idx-1)*2);s="emulator-"+port
+    ds=devices(); idx=max([P.indice_minuteplay(os.path.splitext(n)[0]) or 0 for n in os.listdir(P.AVD_HOME)]+[0])+1;n="MinutePlay"+str(idx);port=str(5554+(idx-1)*2);s="emulator-"+port
     dst=os.path.join(P.AVD_HOME,n+".avd")
     if not os.path.isdir(P.TEMPLATE_AVD):raise RuntimeError("modelo-base nao encontrado")
-    files=[];total=0
-    for root,dirs,names in os.walk(P.TEMPLATE_AVD):
-        dirs[:]=[d for d in dirs if not d.endswith(".lock") and d!="tmpAdbCmds"]
-        for f in names:
-            if f.endswith(".lock") or f in {"hardware-qemu.ini","emu-launch-params.txt","multiinstance.lock"}:continue
-            a=os.path.join(root,f);b=os.path.join(dst,os.path.relpath(a,P.TEMPLATE_AVD));z=os.path.getsize(a);files.append((a,b,z));total+=z
-    done=0
-    for a,b,z in files:
-        os.makedirs(os.path.dirname(b),exist_ok=True)
-        with open(a,"rb") as i,open(b,"wb") as o:
-            while q:=i.read(8*1024*1024):o.write(q);done+=len(q);update(progress=min(88,int(done/max(1,total)*88)),message="Criando "+n+"...")
-        shutil.copystat(a,b)
+    clone_offline(P.TEMPLATE_AVD,dst,lambda done,total:update(progress=min(88,int(done/max(1,total)*88)),message="Criando "+n+" com 128 GiB..."))
     with open(os.path.join(P.AVD_HOME,n+".ini"),"w",encoding="utf8") as f:f.write("avd.ini.encoding=UTF-8\npath="+dst+"\npath.rel=avd\\"+n+".avd\ntarget=android-33\n")
     start_phone(n,s,port)
     if not wait_open(s,time.monotonic()+360):raise RuntimeError("boot demorou mais de 6 minutos")
+    finish_resize(s,lambda message:update(message=message))
     E._adb(s,"shell","pm","clear","com.bakerdata.minute",timeout=30);open_minute(s)
     update(busy=False,progress=100,message=n+" criado sem login no Minute.",level="ok")
 def sync():
@@ -267,12 +343,15 @@ def sync():
             except:pass
         raise
 def job(kind,fn):
-    if snap()["busy"]:raise RuntimeError("ja existe uma operacao em andamento")
+    with LOCK:
+        if S["busy"]:raise RuntimeError("ja existe uma operacao em andamento")
+        S.update(busy=True,level="info",progress=0,stage="Iniciando",operation=kind)
     def work():
-        try:update(busy=True,level="info",progress=0);fn()
+        try:fn()
         except InterruptedError:update(busy=False,level="warn",message="Cancelado sem salvar.")
-        except Exception as x:update(busy=False,level="error",message=str(x),progress=0)
+        except Exception as x:update(busy=False,level="error",message=str(x))
     threading.Thread(target=work,daemon=True).start()
+
 def action(d):
     a=d.get("action");s=d.get("serial","");by={v[0]:(n,v[1]) for n,v in devices().items()}
     if a=="mirror_stop":MIRROR.stop()
@@ -353,17 +432,37 @@ class H(BaseHTTPRequestHandler):
         if self.path=="/api/upload":
             n=os.path.basename(urllib.parse.unquote(self.headers.get("X-Filename","video.mp4")));z=int(self.headers.get("Content-Length","0"));os.makedirs(VIDEOS,exist_ok=True)
             if not n.lower().endswith(P.EXTS):return self.sendj({"error":"formato de video invalido"},400)
-            with open(os.path.join(VIDEOS,n),"wb") as f:
-                while z:q=self.rfile.read(min(z,8*1024*1024));f.write(q);z-=len(q)
-            return self.sendj({"ok":True,"name":n})
+            if not n or z<=0:return self.sendj({"error":"Arquivo vazio"},400)
+            with LOCK:
+                if S["busy"]:return self.sendj({"error":"Aguarde a operacao atual"},409)
+                S.update(busy=True,stage="Importando",progress=0,level="info",message="Importando "+n)
+            stem,extension=os.path.splitext(n);suffix=2
+            while os.path.exists(os.path.join(VIDEOS,n)):
+                n=f"{stem} ({suffix}){extension}";suffix+=1
+            total=z;pending=os.path.join(VIDEOS,n)+".uploading"
+            try:
+                if shutil.disk_usage(VIDEOS).free<z+256*1024**2:raise RuntimeError("Espaco insuficiente no PC")
+                with open(pending,"wb") as f:
+                    while z:
+                        q=self.rfile.read(min(z,8*1024*1024))
+                        if not q:raise RuntimeError("Upload interrompido")
+                        f.write(q);z-=len(q)
+                        update(progress=int((total-z)*100/total),message="Importando "+n)
+                os.replace(pending,os.path.join(VIDEOS,n))
+                update(busy=False,progress=100,message=n+" importado",stage="Concluido",level="ok")
+                return self.sendj({"ok":True,"name":n})
+            except Exception as exc:
+                if os.path.isfile(pending):os.remove(pending)
+                update(busy=False,level="error",message=str(exc))
+                return self.sendj({"error":str(exc)},400)
         try:d=json.loads(self.rfile.read(int(self.headers.get("Content-Length","0"))) or b"{}");action(d);self.sendj({"ok":True},202)
         except Exception as x:self.sendj({"error":str(x)},400)
 def open_ui():
-    url="http://127.0.0.1:8765/";edge=next((x for x in [os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")] if os.path.isfile(x)),None)
+    url=f"http://127.0.0.1:{PORT}/";edge=next((x for x in [os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")] if os.path.isfile(x)),None)
     subprocess.Popen([edge,"--app="+url,"--start-maximized"],**hidden()) if edge else webbrowser.open(url)
 def main():
     if FROZEN and len(sys.argv)>1 and sys.argv[1]=="--montar":import montar;montar.main(sys.argv[2:]);return
-    try:server=ThreadingHTTPServer(("127.0.0.1",8765),H)
+    try:server=ThreadingHTTPServer(("127.0.0.1",PORT),H)
     except OSError:open_ui();return
     if "--no-open" not in sys.argv:threading.Timer(.5,open_ui).start()
     if "--abrir-tudo" in sys.argv:threading.Timer(1,lambda:job("all",open_all)).start()

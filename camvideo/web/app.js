@@ -27,7 +27,7 @@ setupPlaybackMute();
 const $=id=>document.getElementById(id);const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function icons(){if(window.lucide)window.lucide.createIcons({attrs:{"stroke-width":1.8}})}
 function formatTime(seconds,compact=false){seconds=Math.max(0,Number(seconds)||0);const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60);return compact?`${h}h ${String(m).padStart(2,"0")}min`:`${String(Math.floor(seconds/60)).padStart(2,"0")}:${(seconds%60).toFixed(1).padStart(4,"0")}`}
-function size(bytes){if(!bytes)return "0 MB";return bytes>=1073741824?`${(bytes/1073741824).toFixed(1)} GB`:`${(bytes/1048576).toFixed(1)} MB`}
+function size(bytes){if(!bytes)return "0 MB";return bytes>=1073741824?`${(bytes/1073741824).toFixed(1)} GiB`:`${(bytes/1048576).toFixed(1)} MiB`}
 function duration(seconds){const m=Math.floor((seconds||0)/60),s=Math.floor((seconds||0)%60);return `${m}:${String(s).padStart(2,"0")}`}
 function toast(text){const el=$("toast");el.textContent=text;el.classList.add("show");clearTimeout(app.toastTimer);app.toastTimer=setTimeout(()=>el.classList.remove("show"),2800)}
 async function call(action,data={}){const response=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...data,action})});const body=await response.json();if(!response.ok)throw Error(body.error||"Não foi possível concluir");return body}

@@ -84,11 +84,16 @@ def indice_minuteplay(nome):
 
 def descobrir_celulares():
     nomes = []
+    try:
+        with open(os.path.join(AREA,"retired-emulators.json"),encoding="utf-8") as f:
+            retired=set(json.load(f))
+    except (OSError,ValueError,TypeError):retired=set()
     if os.path.isdir(AVD_HOME):
         for arquivo in os.listdir(AVD_HOME):
             if not arquivo.lower().endswith(".ini"):
                 continue
             nome = os.path.splitext(arquivo)[0]
+            if nome in retired:continue
             indice = indice_minuteplay(nome)
             if indice is not None and os.path.isdir(os.path.join(AVD_HOME, nome + ".avd")):
                 nomes.append((indice, nome))

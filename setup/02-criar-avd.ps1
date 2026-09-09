@@ -59,7 +59,7 @@ $ajustes = @{
     "hw.gpu.enabled"  = "yes"
     "hw.gpu.mode"     = "auto"
     "PlayStore.enabled" = "yes"
-    "disk.dataPartition.size" = "8G"
+    "disk.dataPartition.size" = "128G"
     # o avdmanager default e 228M. O AVD que funcionou aqui tinha 512 (esta no
     # MinutePlay-config.ini) -- o Minute e React Native + Expo, nao e leve.
     "vm.heapSize"     = "512"

@@ -1,5 +1,6 @@
 param(
-    [switch] $NaoInstalarDependencias
+    [switch] $NaoInstalarDependencias,
+    [switch] $Diagnostico
 )
 
 $ErrorActionPreference = 'Stop'
@@ -7,6 +8,8 @@ $raiz = Split-Path -Parent $MyInvocation.MyCommand.Path
 $entrada = Join-Path $raiz 'camvideo\modern_server.pyw'
 $dist = Join-Path $raiz 'dist'
 $work = Join-Path $raiz 'build\pyinstaller'
+$buildName = if ($Diagnostico) { 'CameraEmuladorDiagnostico' } else { 'CameraEmulador' }
+$windowMode = if ($Diagnostico) { '--console' } else { '--windowed' }
 
 if (-not $NaoInstalarDependencias) {
     python -m pip install --disable-pip-version-check --quiet 'pyinstaller>=6.0,<7.0'
@@ -17,8 +20,8 @@ python -m PyInstaller `
     --noconfirm `
     --clean `
     --onefile `
-    --windowed `
-    --name CameraEmulador `
+    $windowMode `
+    --name $buildName `
     --distpath $dist `
     --workpath $work `
     --specpath (Join-Path $work 'spec') `
@@ -28,6 +31,11 @@ python -m PyInstaller `
     --add-data "$(Join-Path $raiz 'camvideo\painel.pyw');." `
     --add-data "$(Join-Path $raiz 'camvideo\web');web" `
     --hidden-import montar `
+    --hidden-import tkinter `
+    --hidden-import tkinter.filedialog `
+    --hidden-import tkinter.messagebox `
+    --hidden-import tkinter.simpledialog `
+    --hidden-import tkinter.ttk `
     $entrada
 
 if ($LASTEXITCODE -ne 0) { throw 'A criacao do executavel falhou.' }
