@@ -6,6 +6,7 @@ from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
 from camera_transfer import Transfers
 from automation import Automation
+from automation_queue import run_queue
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
@@ -170,7 +171,7 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=4,automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return
@@ -358,6 +359,28 @@ def sync(options=None):
             start_phone(n,s,p)
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
         if options.get("autoNavigate",True):open_minute(s)
+    if options.get('manageRam', options.get('scope') != 'online') and options.get('autoNavigate',True):
+        def boot(n,s,p):
+            start_phone(n,s,p)
+            deadline=time.monotonic()+360
+            while time.monotonic()<deadline:
+                AUTOMATION.check_cancel()
+                if status(s)=='online' and E._adb(s,'shell','getprop','sys.boot_completed',timeout=8).stdout.strip()=='1':
+                    time.sleep(4)
+                    return
+                time.sleep(2)
+            raise RuntimeError(n+': Android não terminou de iniciar em 6 minutos')
+        def shutdown(s):
+            E._adb(s,'shell','sync',timeout=90,check=True)
+            E._adb(s,'emu','kill',timeout=8,check=True)
+            deadline=time.monotonic()+30
+            while status(s)!='off' and time.monotonic()<deadline:time.sleep(1)
+            if status(s)!='off':raise RuntimeError('Celular salvo não desligou: '+s)
+            time.sleep(2)
+        return run_queue(AUTOMATION,targets,prepare,TRANSFERS.snapshot()['installedVideos'],
+                         str(options.get('taskName','')),True,bool(options.get('repeat',False)),
+                         lambda s:status(s)=='online',boot,shutdown)
+    update(queueActive=False,queueBatch=0,queueSaved=[],queuePending=[])
     AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
                    str(options.get("taskName", "")),bool(options.get("autoNavigate",True)),
                    repeat=bool(options.get("repeat",False)))
