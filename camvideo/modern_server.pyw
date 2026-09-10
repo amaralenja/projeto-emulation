@@ -6,7 +6,7 @@ from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
 from camera_transfer import Transfers
 from automation import Automation
-from automation_queue import run_queue
+from automation_queue import run_queue, capacity_snapshot
 from task_history import task_usage
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
@@ -172,7 +172,7 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return

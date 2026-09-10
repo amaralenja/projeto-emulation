@@ -48,6 +48,7 @@ Reinicie o Windows e rode este instalador novamente. Ele pulara o que ja existe.
     exit 2
 }
 
+& (Join-Path $PSScriptRoot 'INSTALAR-BUSCA-UNICODE.ps1')
 & (Join-Path $PSScriptRoot '02-criar-avd.ps1')
 
 Write-Host @"

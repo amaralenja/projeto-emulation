@@ -14,6 +14,10 @@
     <div class="automation-rule"><strong>Encerrar e salvar automaticamente</strong><p>Ao terminar o vídeo instalado ou atingir o limite de 29min59s, o que acontecer primeiro. O tempo de preparação já gravado pelo Minute entra nesse limite.</p></div>
     <p id="automation-video"></p><p class="automation-steps">1. Girar à esquerda → 2. Abrir a tarefa → 3. Vídeo do zero e gravação → 4. Encerrar e salvar</p>`;
   main.prepend(config);
+  const ram = document.createElement('div');
+  ram.className = 'automation-rule';
+  ram.innerHTML = '<strong>Capacidade do PC agora</strong><p id="automation-ram-live" aria-live="polite">Medindo a memória disponível...</p><small>Estimativa atualizada automaticamente. Reserva 2,5 GiB para o Windows e considera 3 GiB por novo celular. Feche programas para liberar RAM; o consumo pode variar.</small>';
+  config.prepend(ram);
   const result = document.createElement('article');
   result.className = 'panel automation-results';
   result.innerHTML = '<h2>Andamento por celular</h2><p id="automation-loop-status"></p><p id="automation-queue-status"></p><button class="button button-secondary" id="loop-stop-after" disabled>Parar após salvar esta rodada</button><p id="automation-message">Escolha a tarefa e confira o vídeo antes de iniciar.</p><div id="automation-rows"></div>';
@@ -40,6 +44,8 @@
   const originalRender = render;
   render = state => {
     originalRender(state);
+    const capacity = state.capacity;
+    document.getElementById('automation-ram-live').textContent = !capacity ? 'Abra o painel atualizado para ver a RAM.' : capacity.error || `RAM livre: ${(capacity.freeBytes/1073741824).toFixed(1)} GiB de ${(capacity.totalBytes/1073741824).toFixed(1)} GiB • Pode iniciar mais ${capacity.additional} celular(es) • Total estimado: ${capacity.estimatedTotal} simultâneos${capacity.lowMemory ? ' • Pouca memória: feche programas antes de iniciar.' : ''}`;
     const active = state.busy && state.operation === 'sync';
     supportsLoop = state.automationVersion >= 4;
     repeat.disabled = active || !supportsLoop;

@@ -1,11 +1,17 @@
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
-from automation_queue import run_queue, additional_capacity, GIB
+from unittest.mock import Mock, patch
+from automation_queue import run_queue, additional_capacity, GIB, capacity_snapshot
 
 
 class QueueTests(unittest.TestCase):
+    def test_live_capacity_changes_when_memory_is_freed(self):
+        with patch('automation_queue.memory_info', return_value={'freeBytes':3*GIB,'totalBytes':16*GIB}):
+            self.assertEqual(capacity_snapshot(7,2)['additional'],0)
+        with patch('automation_queue.memory_info', return_value={'freeBytes':9*GIB,'totalBytes':16*GIB}):
+            self.assertEqual(capacity_snapshot(7,2)['additional'],2)
+            self.assertEqual(capacity_snapshot(3,2)['estimatedTotal'],3)
     def test_higher_usage_online_phone_yields_to_lower_usage(self):
         data = self.setup_queue()
         a, targets, installed, active, calls, boot, shutdown, memory = data

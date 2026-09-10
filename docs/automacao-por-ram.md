@@ -21,3 +21,11 @@ A visão geral mostra TOTAL SALVO acumulado e, logo abaixo, o total de hoje. Sã
 A fila prioriza menor uso da tarefa no dia local do PC. Em empate, usa o menor acumulado histórico nessa tarefa. Singular/plural simples e acentos usam a mesma comparação da busca. Contas no limite de 2 horas são puladas; saldos menores que 90 segundos também, para reservar a contagem do aplicativo e o mínimo salvável. Rodadas são reduzidas ao saldo disponível quando necessário. O loop termina quando não há participantes com saldo.
 
 Celulares ligados com maior uso cedem lugar aos prioritários; câmeras abertas e gravações em revisão impedem o desligamento até serem salvas. Nenhum histórico foi inventado ou remanejado entre dias.
+
+## Busca completa e memória ao vivo
+
+A busca usa o título completo, preservando cedilha e acentos. A escrita usa UiAutomator2 3.7.0 pelo campo de acessibilidade, sem converter a consulta em palavras soltas ou enviar teclas ASCII. A leitura de volta exige os acentos informados. O limite da pesquisa é 60 segundos com até quatro posições da lista filtrada, sujeito aos timeouts das operações Android. O servidor auxiliar é encerrado após a escrita para liberar a navegação existente.
+
+Instale essa dependência com setup/INSTALAR-BUSCA-UNICODE.ps1. O instalador de PC novo também executa essa etapa. Os pacotes ficam em LOCALAPPDATA/emulation-cam/automation-runtime. Referência técnica: https://github.com/openatx/uiautomator2 .
+
+A aba Automação mostra RAM livre e total, celulares adicionais que cabem e total simultâneo estimado, atualizados a cada consulta de estado. O cálculo usa a mesma reserva e orçamento da fila; é uma estimativa e não uma garantia de desempenho. Não fecha outros aplicativos.

@@ -7,7 +7,7 @@ RESERVE = int(2.5 * GIB)
 PHONE_BUDGET = 3 * GIB  # 2 GiB guest plus rendering/host overhead.
 
 
-def memory_available():
+def memory_info():
     class Status(ctypes.Structure):
         _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + [
             (name, ctypes.c_ulonglong) for name in
@@ -16,7 +16,22 @@ def memory_available():
     value.length = ctypes.sizeof(value)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(value)):
         raise RuntimeError('Não foi possível medir a RAM disponível.')
-    return value.available
+    return {'freeBytes': value.available, 'totalBytes': value.total}
+
+
+def memory_available():
+    return memory_info()['freeBytes']
+
+
+def capacity_snapshot(registered, online):
+    try:
+        info = memory_info()
+        additional = min(max(0, registered-online), additional_capacity(info['freeBytes']))
+        return dict(info, additional=additional, estimatedTotal=min(registered, online+additional),
+                    online=online, reserveBytes=RESERVE, phoneBudgetBytes=PHONE_BUDGET,
+                    lowMemory=info['freeBytes'] < GIB)
+    except (OSError, RuntimeError, AttributeError):
+        return {'error': 'Não foi possível medir a RAM disponível agora.'}
 
 
 def additional_capacity(available):

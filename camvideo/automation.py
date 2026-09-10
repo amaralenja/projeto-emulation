@@ -7,6 +7,7 @@ import threading
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
+from unicode_search import write_query, exact_text
 
 MAX_SECONDS = 29 * 60 + 59
 
@@ -206,30 +207,20 @@ class Automation:
         raise RuntimeError('Campo de busca não encontrado na lista de tarefas')
 
     def set_query(self, serial, query):
-        for _ in range(3):
-            field = self.search_field(serial)
-            self.tap(serial, field)
-            text = search_text(field)
-            if text:
-                self.e._adb(serial, 'shell', 'input', 'keyevent', '123',
-                            *(['67'] * min(len(text), 512)), timeout=25, check=True)
-            if query:
-                self.e._adb(serial, 'shell', 'input', 'text', query, timeout=25, check=True)
-            self.hide_keyboard(serial)
+        for _ in range(2):
+            self.search_field(serial)
+            write_query(serial, query)
             time.sleep(.8)
             nodes = list(self.xml(serial).iter('node'))
             actual = next((n for n in nodes if n.get('resource-id') == 'home-search-input'), None)
-            if actual is not None and normalize(search_text(actual)) == normalize(query):
+            if actual is not None and exact_text(search_text(actual)) == exact_text(query):
                 return
         raise RuntimeError('O campo de busca não confirmou o texto digitado; nenhuma tarefa foi iniciada')
 
     def navigate(self, serial, task):
         self.task_list(serial)
-        # Try alternative meaningful words, but only accept the complete title.
-        words = re.findall(r'[a-z0-9]{3,}', normalize(task))
-        words = [w for w in words if w not in {'para', 'com', 'uma', 'dos', 'das'}]
-        queries = list(dict.fromkeys(sorted(words, key=len, reverse=True)))[:3] + ['']
-        deadline = time.monotonic() + 240
+        queries = [task.strip()]
+        deadline = time.monotonic() + 60
         for query in queries:
             self.check_cancel()
             if time.monotonic() >= deadline:
@@ -238,7 +229,7 @@ class Automation:
             self.set_query(serial, query)
             previous = None
             unchanged = 0
-            for _ in range(18):
+            for _ in range(4):
                 self.check_cancel()
                 if time.monotonic() >= deadline:
                     break
@@ -260,7 +251,7 @@ class Automation:
                         card.set('bounds',f'[{x1},{y1}][{x2},{y2}]')
                         self.mark(serial, stage='Tarefa encontrada: '+card.get('content-desc', '').split(',')[0])
                         self.tap(serial, card)
-                        self.finish_camera(serial)
+                        self.finish_camera(serial, card.get('resource-id'))
                         return
                 signature = tuple((n.get('resource-id'), n.get('bounds')) for n in cards)
                 unchanged = unchanged+1 if signature == previous else 0
@@ -270,8 +261,8 @@ class Automation:
                 self.scroll_tasks(serial)
         raise RuntimeError('Tarefa não encontrada: '+task+'. Confira o nome completo e se ela está disponível nesta conta.')
 
-    def finish_camera(self, serial):
-        for _ in range(8):
+    def finish_camera(self, serial, card_id=None):
+        for attempt in range(8):
             self.check_cancel()
             try:
                 root = self.xml(serial)
@@ -286,6 +277,18 @@ class Automation:
             if button is None:
                 if self.e._camera_pronta(serial) is not None:
                     return
+                # A tap can merely dismiss the keyboard and move the result card.
+                # Retry only the same identified card using its new visible bounds.
+                if card_id and attempt in {1, 3}:
+                    card = next((n for n in root.iter('node') if n.get('resource-id') == card_id and self.visible(n)), None)
+                    if card is not None:
+                        x1,y1,x2,y2 = map(int,re.findall(r'\d+',card.get('bounds')))
+                        footer = [int(re.findall(r'\d+',n.get('bounds'))[1]) for n in root.iter('node')
+                                  if n.get('resource-id') == 'nav-index' and self.visible(n)]
+                        if footer: y2 = min(y2, min(footer)-8)
+                        if y2-y1 >= 40:
+                            card.set('bounds',f'[{x1},{y1}][{x2},{y2}]')
+                            self.tap(serial, card)
                 # A task tap can return an accessibility snapshot of the old
                 # list while the detail screen is still mounting.
                 time.sleep(.5)

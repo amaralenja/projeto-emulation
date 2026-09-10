@@ -5,9 +5,9 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = '2.3.1'
+APP_VERSION = '2.3.2'
 
-BACKEND_FILES = ('modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'camera_transfer.py',
+BACKEND_FILES = ('modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
                  'shared_camera.py', 'mirror.py', 'storage.py', 'voice_manager.py',
                  'voice_worker.py', 'tiktok_live.py', 'panel_runtime.py', 'product_writer.py', 'live_voice.py')
 

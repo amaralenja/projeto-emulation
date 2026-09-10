@@ -17,7 +17,7 @@ class AutomationTests(unittest.TestCase):
         a.search_field = Mock(return_value=field)
         a.tap = Mock(); a.hide_keyboard = Mock()
         a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="home-search-input" text="Buscar tarefas"/></hierarchy>'))
-        with patch('automation.time.sleep'): a.set_query('s', '')
+        with patch('automation.time.sleep'), patch('automation.write_query'): a.set_query('s', '')
         a.e._adb.assert_not_called()
 
     def test_plural_title_selects_actual_task(self):
@@ -209,14 +209,14 @@ class AutomationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): a.scroll_tasks('s')
         a.e._adb.assert_not_called()
 
-    def test_search_tries_alternative_word_and_rejects_similar_title(self):
+    def test_search_full_title_and_rejects_similar_title(self):
         a = Automation(self.engine(), Mock())
         a.task_list = Mock(); a.set_query = Mock(); a.scroll_tasks = Mock(); a.finish_camera = Mock(); a.tap = Mock()
         wrong = ET.fromstring('<hierarchy><node resource-id="task-card-1" content-desc="Lavar Louça no Tanque, descrição" bounds="[1,1][100,100]"/></hierarchy>')
         right = ET.fromstring('<hierarchy><node resource-id="task-card-2" content-desc="LAVAR LOUÇA NA PIA, descrição" bounds="[1,1][100,100]"/></hierarchy>')
-        a.xml = Mock(side_effect=[wrong,wrong,wrong,right])
+        a.xml = Mock(side_effect=[wrong,wrong,right])
         a.navigate('s','Lavar Louça na Pia')
-        self.assertEqual(a.set_query.call_count,2)
+        a.set_query.assert_called_once_with('s', 'Lavar Louça na Pia')
         self.assertEqual(a.tap.call_args.args[1].get('resource-id'),'task-card-2')
 
     def test_search_replaces_old_text_and_verifies_new_text(self):
@@ -224,8 +224,9 @@ class AutomationTests(unittest.TestCase):
         a.search_field = Mock(return_value=ET.fromstring('<node text="LavarLavar"/>'))
         a.tap = Mock(); a.hide_keyboard = Mock()
         a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="home-search-input" text="lavar"/></hierarchy>'))
-        with patch('automation.time.sleep'): a.set_query('s','lavar')
-        self.assertEqual(a.e._adb.call_args_list[0].args.count('67'),10)
+        with patch('automation.time.sleep'), patch('automation.write_query') as writer: a.set_query('s','lavar')
+        writer.assert_called_once_with('s', 'lavar')
+        a.e._adb.assert_not_called()
 
     def test_loop_runs_again_only_after_all_saved_and_keeps_busy(self):
         e = self.engine(); updates = Mock(); a = Automation(e, updates)
