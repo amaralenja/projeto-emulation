@@ -162,6 +162,27 @@ class Automation:
                 time.sleep(.5)
         raise RuntimeError('Não consegui abrir a lista de tarefas; confira a tela do Minute')
 
+    def wait_minute_ready(self, serial, timeout=90):
+        """ADB online does not mean the cold-started React Native screen is ready."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.check_cancel()
+            try:
+                if self.minute_foreground(serial):
+                    if self.e._camera_pronta(serial) is not None:
+                        return
+                    nodes = list(self.xml(serial).iter('node'))
+                    if any(n.get('package') == 'com.bakerdata.minute' and
+                           (n.get('resource-id') in {'nav-index', 'home-search-input', 'record-close',
+                                                    'record-new-task', 'record-accept', 'minute-save'} or
+                            len(n.get('text', '').strip()) > 3) for n in nodes):
+                        return
+            except (RuntimeError, subprocess.TimeoutExpired, ET.ParseError):
+                pass
+            if self.e.cancelar_sync.wait(1):
+                self.check_cancel()
+        raise RuntimeError('O Minute não terminou de abrir em 90 segundos; confira o celular')
+
     def search_field(self, serial):
         for _ in range(10):
             self.check_cancel()

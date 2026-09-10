@@ -358,7 +358,10 @@ def sync(options=None):
         if status(s)!="online":
             start_phone(n,s,p)
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
-        if options.get("autoNavigate",True):open_minute(s)
+        if options.get("autoNavigate",True):
+            open_minute(s)
+            AUTOMATION.mark(s,stage="Aguardando o Minute abrir")
+            AUTOMATION.wait_minute_ready(s)
     if options.get('manageRam', options.get('scope') != 'online') and options.get('autoNavigate',True):
         def boot(n,s,p):
             start_phone(n,s,p)

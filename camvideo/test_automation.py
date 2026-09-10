@@ -7,6 +7,21 @@ from automation import Automation, recording_duration, stop_deadline, normalize
 
 
 class AutomationTests(unittest.TestCase):
+    def test_wait_for_cold_start_ignores_empty_screen(self):
+        a = Automation(self.engine(), Mock())
+        a.minute_foreground = Mock(return_value=True)
+        a.e._camera_pronta.return_value = None
+        a.xml = Mock(side_effect=[ET.fromstring('<hierarchy/>'), ET.fromstring(
+            '<hierarchy><node package="com.bakerdata.minute" resource-id="nav-index"/></hierarchy>')])
+        a.e.cancelar_sync.wait = Mock(return_value=False)
+        a.wait_minute_ready('s')
+        self.assertEqual(a.xml.call_count, 2)
+
+    def test_cold_start_timeout_does_not_tap(self):
+        a = Automation(self.engine(), Mock())
+        with self.assertRaises(RuntimeError): a.wait_minute_ready('s', timeout=0)
+        a.e._tocar_botao_gravacao.assert_not_called()
+
     def engine(self):
         e = Mock()
         e.cancelar_sync = threading.Event()
