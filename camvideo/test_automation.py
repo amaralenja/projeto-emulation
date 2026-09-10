@@ -3,10 +3,30 @@ import threading
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
-from automation import Automation, recording_duration, stop_deadline, normalize
+from automation import Automation, recording_duration, stop_deadline, normalize, task_key
 
 
 class AutomationTests(unittest.TestCase):
+    def test_plural_task_keeps_location_and_word_order(self):
+        self.assertEqual(task_key('Lavar Louças na Pia'), task_key('Lavar Louça na Pia'))
+        self.assertNotEqual(task_key('Lavar Louças na Pia'), task_key('Lavar Louça no Tanque'))
+
+    def test_empty_search_accepts_placeholder(self):
+        a = Automation(self.engine(), Mock())
+        field = ET.fromstring('<node resource-id="home-search-input" text="Buscar tarefas"/>')
+        a.search_field = Mock(return_value=field)
+        a.tap = Mock(); a.hide_keyboard = Mock()
+        a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="home-search-input" text="Buscar tarefas"/></hierarchy>'))
+        with patch('automation.time.sleep'): a.set_query('s', '')
+        a.e._adb.assert_not_called()
+
+    def test_plural_title_selects_actual_task(self):
+        a = Automation(self.engine(), Mock())
+        a.task_list = Mock(); a.set_query = Mock(); a.finish_camera = Mock(); a.tap = Mock()
+        a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="task-card-2" content-desc="Lavar Louça na Pia, descrição" bounds="[1,1][100,100]"/></hierarchy>'))
+        a.navigate('s', 'Lavar Louças na Pia')
+        self.assertEqual(a.tap.call_args.args[1].get('resource-id'), 'task-card-2')
+
     def test_wait_for_cold_start_ignores_empty_screen(self):
         a = Automation(self.engine(), Mock())
         a.minute_foreground = Mock(return_value=True)

@@ -16,6 +16,18 @@ def normalize(value):
                             if not unicodedata.combining(c)).split())
 
 
+def task_key(value):
+    # Preserve every word and its order; accept only a simple final plural s.
+    return tuple(w[:-1] if len(w) > 4 and w.endswith('s') else w
+                 for w in normalize(value).split())
+
+
+def search_text(node):
+    text = node.get('text', '')
+    # Android's accessibility dump exposes this placeholder as EditText.text.
+    return '' if normalize(text) == 'buscar tarefas' else text
+
+
 def recording_duration(seconds):
     seconds = float(seconds)
     if not math.isfinite(seconds) or seconds < 61.5:
@@ -197,7 +209,7 @@ class Automation:
         for _ in range(3):
             field = self.search_field(serial)
             self.tap(serial, field)
-            text = field.get('text', '')
+            text = search_text(field)
             if text:
                 self.e._adb(serial, 'shell', 'input', 'keyevent', '123',
                             *(['67'] * min(len(text), 512)), timeout=25, check=True)
@@ -207,7 +219,7 @@ class Automation:
             time.sleep(.8)
             nodes = list(self.xml(serial).iter('node'))
             actual = next((n for n in nodes if n.get('resource-id') == 'home-search-input'), None)
-            if actual is not None and normalize(actual.get('text', '')) == normalize(query):
+            if actual is not None and normalize(search_text(actual)) == normalize(query):
                 return
         raise RuntimeError('O campo de busca não confirmou o texto digitado; nenhuma tarefa foi iniciada')
 
@@ -233,6 +245,11 @@ class Automation:
                 nodes = list(self.xml(serial).iter('node'))
                 cards = [n for n in nodes if n.get('resource-id', '').startswith(('task-card-', 'featured-card-')) and self.visible(n)]
                 matches = [n for n in cards if normalize(n.get('content-desc', '').split(',')[0]) == normalize(task)]
+                if not matches:
+                    matches = [n for n in cards if task_key(n.get('content-desc', '').split(',')[0]) == task_key(task)]
+                    titles = {normalize(n.get('content-desc', '').split(',')[0]) for n in matches}
+                    if len(titles) > 1:
+                        raise RuntimeError('Mais de uma tarefa parecida encontrada. Informe o título exato: '+ '; '.join(sorted(titles)))
                 if matches:
                     card = matches[0]
                     x1,y1,x2,y2 = map(int,re.findall(r'\d+',card.get('bounds')))
@@ -241,7 +258,7 @@ class Automation:
                     if footers: y2=min(y2,min(footers)-8)
                     if y2-y1 >= 40:
                         card.set('bounds',f'[{x1},{y1}][{x2},{y2}]')
-                        self.mark(serial, stage='Tarefa encontrada: '+task)
+                        self.mark(serial, stage='Tarefa encontrada: '+card.get('content-desc', '').split(',')[0])
                         self.tap(serial, card)
                         self.finish_camera(serial)
                         return
@@ -403,7 +420,7 @@ class Automation:
                 capture_confirmed = True
                 task_id, actual = self.e._detectar_tarefa_sessao(s, session)
                 task_ids[s] = task_id
-                if auto and normalize(actual) != normalize(task):
+                if auto and task_key(actual) != task_key(task):
                     raise RuntimeError('Tarefa aberta diferente da escolhida: '+actual)
                 if self.e._uso_tarefa(name, actual)+durations[s] > 7200:
                     raise RuntimeError('Limite diário insuficiente')
