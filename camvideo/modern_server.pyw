@@ -7,6 +7,7 @@ from mirror import TouchMirror
 from camera_transfer import Transfers
 from automation import Automation
 from automation_queue import run_queue
+from task_history import task_usage
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
@@ -360,7 +361,7 @@ def sync(options=None):
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
         if options.get("autoNavigate",True):
             open_minute(s)
-            AUTOMATION.mark(s,stage="Aguardando o Minute abrir")
+            AUTOMATION.mark(s,stage='Aguardando o Minute abrir')
             AUTOMATION.wait_minute_ready(s)
     if options.get('manageRam', options.get('scope') != 'online') and options.get('autoNavigate',True):
         def boot(n,s,p):
@@ -374,6 +375,11 @@ def sync(options=None):
                 time.sleep(2)
             raise RuntimeError(n+': Android não terminou de iniciar em 6 minutos')
         def shutdown(s):
+            if AUTOMATION.snapshot().get(s,{}).get('stage') != 'Salvo':
+                if E._camera_pronta(s) is not None:
+                    raise RuntimeError('Encerre e salve a câmera aberta em '+s+' antes de reorganizar a fila.')
+                if any(n.get('resource-id') in {'minute-save','record-accept'} for n in AUTOMATION.xml(s).iter('node')):
+                    raise RuntimeError('Há uma gravação para salvar em '+s+'. A fila foi pausada.')
             E._adb(s,'shell','sync',timeout=90,check=True)
             E._adb(s,'emu','kill',timeout=8,check=True)
             deadline=time.monotonic()+30
@@ -382,7 +388,9 @@ def sync(options=None):
             time.sleep(2)
         return run_queue(AUTOMATION,targets,prepare,TRANSFERS.snapshot()['installedVideos'],
                          str(options.get('taskName','')),True,bool(options.get('repeat',False)),
-                         lambda s:status(s)=='online',boot,shutdown)
+                         lambda s:status(s)=='online',boot,shutdown,
+                         usage=lambda n:E._uso_tarefa(n,str(options.get('taskName',''))),
+                         lifetime=lambda n:task_usage(E._ler_historico(),n,str(options.get('taskName',''))))
     update(queueActive=False,queueBatch=0,queueSaved=[],queuePending=[])
     AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
                    str(options.get("taskName", "")),bool(options.get("autoNavigate",True)),

@@ -418,19 +418,16 @@ class Painel:
         return time.strftime("%Y-%m-%d")
 
     def _uso_tarefa(self, celular, tarefa):
+        from task_history import task_usage
         chave = self._chave_tarefa(tarefa)
         if not chave:
             return 0.0
         with self.lock_historico:
             dados = self._ler_historico()
-            entrada = (dados.get("dias", {}).get(self._hoje(), {})
-                       .get(celular, {}).get(chave, {}))
-            try:
-                return float(entrada.get("segundos", 0))
-            except (AttributeError, TypeError, ValueError):
-                return 0.0
+            return task_usage(dados, celular, tarefa, self._hoje())
 
     def _definir_uso_tarefa(self, celular, tarefa, segundos):
+        from automation import task_key
         chave = self._chave_tarefa(tarefa)
         if not chave:
             raise ValueError("informe a tarefa")
@@ -439,6 +436,9 @@ class Painel:
             dias = dados.setdefault("dias", {})
             aparelhos = dias.setdefault(self._hoje(), {})
             tarefas = aparelhos.setdefault(celular, {})
+            for existing in list(tarefas):
+                if task_key(tarefas[existing].get('nome') or existing) == task_key(tarefa):
+                    del tarefas[existing]
             tarefas[chave] = {
                 "nome": tarefa.strip(),
                 "segundos": max(0.0, min(float(segundos),

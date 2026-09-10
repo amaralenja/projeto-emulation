@@ -383,8 +383,11 @@ class Automation:
                 if value is None:
                     raise RuntimeError('A câmera da tarefa não está pronta')
                 durations[s] = recording_duration(value)
-                if auto and self.e._uso_tarefa(name, task)+durations[s] > 7200:
-                    raise RuntimeError('Limite diário de 2 horas insuficiente para esta gravação')
+                if auto:
+                    remaining = 7200 - self.e._uso_tarefa(name, task)
+                    if remaining < 90:
+                        raise RuntimeError('Limite diário de 2 horas insuficiente para esta gravação')
+                    durations[s] = min(durations[s], remaining)
                 self.mark(s, stage='Pronto', total=durations[s])
             except Exception as exc:
                 self.mark(s, stage='Erro na preparação', error=str(exc))

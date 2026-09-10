@@ -1,5 +1,6 @@
 """Run Minute recordings in memory-bounded batches, never advancing after failure."""
 import ctypes
+from task_history import priority
 
 GIB = 1024 ** 3
 RESERVE = int(2.5 * GIB)
@@ -23,17 +24,18 @@ def additional_capacity(available):
 
 
 def run_queue(automation, targets, prepare, installed, task, auto, repeat,
-              online, boot, shutdown, available=memory_available):
+              online, boot, shutdown, available=memory_available, usage=lambda n: 0, lifetime=lambda n: 0):
     if not targets:
         raise ValueError('Nenhum celular participante.')
     if auto and not task.strip():
         raise ValueError('Informe o nome completo da tarefa no Minute.')
     if not auto:
         raise ValueError('As rodadas por RAM precisam da busca automática da tarefa.')
-    records = [installed.get(s, {}) for s, _ in targets.values()]
+    eligible, _ = priority(targets, usage, lifetime)
+    records = [installed.get(s, {}) for s, _ in eligible.values()]
     if any(not r.get('confirmed') or not r.get('assetId') for r in records):
         raise ValueError('Use o mesmo vídeo em todos os participantes na aba Vídeos antes de iniciar.')
-    if len({r['assetId'] for r in records}) != 1:
+    if records and len({r['assetId'] for r in records}) != 1:
         raise ValueError('Os participantes têm vídeos diferentes. Use “Usar em todos”.')
     automation.e.cancelar_sync.clear()
     automation.stop_after_round.clear()
@@ -44,18 +46,33 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
     try:
         while True:
             cycle += 1
-            pending = dict(targets)
+            pending, skipped = priority(targets, usage, lifetime)
             saved = []
-            update(loopCycle=cycle, queueSaved=saved, queuePending=list(pending))
+            update(loopCycle=cycle, queueSaved=saved, queuePending=list(pending), queueSkipped=skipped)
+            if not pending:
+                update(message='Todos os participantes atingiram o limite diário disponível nesta tarefa.')
+                break
             while pending:
                 automation.check_cancel()
                 if automation.stop_after_round.is_set():
                     return
-                batch = {n: pair for n, pair in pending.items() if online(pair[0])}
+                pending, newly_skipped = priority(pending, usage, lifetime)
+                skipped = list(dict.fromkeys(skipped + newly_skipped))
+                update(queuePending=list(pending), queueSkipped=skipped)
+                if not pending:
+                    break
+                live = {n for n, pair in targets.items() if online(pair[0])}
+                slots = max(1, len(live) + additional_capacity(available()))
+                chosen = dict(list(pending.items())[:slots])
+                # Higher-usage phones must not occupy the slots of lower-usage ones.
+                # The backend refuses shutdown if a camera or review is open.
+                for name in live - chosen.keys():
+                    shutdown(targets[name][0])
+                batch = {n: pair for n, pair in chosen.items() if online(pair[0])}
                 # Boot one at a time; remeasure only after Android is ready.
                 # A fixed allowance also bounds growth before guest pages are touched.
                 allowance = additional_capacity(available())
-                for name, (serial, port) in pending.items():
+                for name, (serial, port) in chosen.items():
                     if name in batch:
                         continue
                     if allowance <= 0 or additional_capacity(available()) <= 0:

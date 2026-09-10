@@ -6,6 +6,23 @@ from automation_queue import run_queue, additional_capacity, GIB
 
 
 class QueueTests(unittest.TestCase):
+    def test_higher_usage_online_phone_yields_to_lower_usage(self):
+        data = self.setup_queue()
+        a, targets, installed, active, calls, boot, shutdown, memory = data
+        active.add('s0')
+        used = lambda n: 7200 if n == 'p0' else 0
+        run_queue(a, targets, Mock(), installed, 'task', True, False,
+                  lambda s: s in active, boot, shutdown, memory, used)
+        self.assertEqual(calls, [['p1', 'p2'], ['p3', 'p4']])
+        self.assertEqual(shutdown.call_args_list[0].args, ('s0',))
+
+    def test_everyone_at_limit_finishes_without_boot(self):
+        a, targets, installed, active, calls, boot, shutdown, memory = self.setup_queue()
+        run_queue(a, targets, Mock(), {}, 'task', True, True,
+                  lambda s: s in active, boot, shutdown, memory, lambda n:7200)
+        self.assertFalse(active)
+        self.assertFalse(calls)
+
     def setup_queue(self, failure=False):
         targets = {f'p{i}': (f's{i}', i) for i in range(5)}
         installed = {s: dict(confirmed=True, assetId='same') for s, _ in targets.values()}
