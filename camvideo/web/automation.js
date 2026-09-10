@@ -31,14 +31,42 @@
   const mode = document.getElementById('automation-mode');
   const repeat = document.getElementById('automation-repeat');
   let supportsLoop = false;
+  let pending = false, connected = false, latestState = null, notice = '';
+  const start = document.getElementById('sync');
+  const feedback = document.createElement('p');
+  feedback.id = 'automation-start-feedback';
+  feedback.setAttribute('role', 'status');
+  feedback.setAttribute('aria-live', 'polite');
+  document.querySelector('.automation-actions').after(feedback);
+  const updateStart = () => {
+    start.disabled = pending || !connected || !latestState || latestState.busy || !latestState.automationVersion || !latestState.sharedCameraVersion;
+    start.textContent = pending ? 'Enviando início...' : latestState?.busy && latestState.operation === 'sync' ? 'Automação em andamento' : 'Iniciar e salvar em todos';
+  };
+  feedback.textContent = 'Conectando ao painel...';
+  updateStart();
+  window.addEventListener('panel-connection', event => {
+    connected = event.detail.connected;
+    if (!connected) feedback.textContent = event.detail.message;
+    updateStart();
+  });
   mode.onchange = e => { task.disabled = e.target.value === 'ready'; if (task.disabled) repeat.value = 'once'; };
   repeat.onchange = () => { if (repeat.value === 'repeat') { mode.value = 'auto'; task.disabled = false; } };
   document.getElementById('loop-stop-after').onclick = () => act('loop_stop_after_round');
-  document.getElementById('sync').onclick = () => {
+  start.onclick = async () => {
+    if (start.disabled) return;
     const autoNavigate = document.getElementById('automation-mode').value === 'auto';
-    if (repeat.value === 'repeat' && !supportsLoop) return toast('Reinicie o painel para ativar o loop contínuo');
-    if (autoNavigate && !task.value.trim()) return toast('Informe o nome completo da tarefa no Minute');
-    act('sync', {autoNavigate, taskName: task.value.trim(), scope: document.getElementById('automation-scope').value, manageRam: autoNavigate && document.getElementById('automation-scope').value === 'all', repeat: repeat.value === 'repeat'});
+    if (repeat.value === 'repeat' && !supportsLoop) return feedback.textContent = notice = 'Reinicie o painel para ativar o loop contínuo';
+    if (autoNavigate && !task.value.trim()) { task.focus(); return feedback.textContent = notice = 'Informe o nome completo da tarefa no Minute'; }
+    notice = '';
+    pending = true; updateStart();
+    feedback.textContent = 'Enviando comando para iniciar a tarefa...';
+    try {
+      await call('sync', {autoNavigate, taskName: task.value.trim(), scope: document.getElementById('automation-scope').value, manageRam: autoNavigate && document.getElementById('automation-scope').value === 'all', repeat: repeat.value === 'repeat'});
+      feedback.textContent = 'Comando recebido. Preparando os celulares...';
+      await refresh();
+    } catch (error) {
+      feedback.textContent = notice = error.message;
+    } finally { pending = false; updateStart(); }
   };
   document.getElementById('cancel').textContent = 'Encerrar agora e salvar';
   const originalRender = render;
@@ -55,7 +83,8 @@
     document.getElementById('automation-queue-status').textContent = state.queueBatch ? `Rodada ${state.queueBatch} • ${state.queueSaved?.length || 0} salvo(s) • Aguardando: ${(state.queuePending || []).map(phoneLabel).join(', ') || 'ninguém'}${state.queueFreeGiB != null ? ' • RAM livre ao iniciar: ' + state.queueFreeGiB.toFixed(1) + ' GiB' : ''}${state.queueSkipped?.length ? ' • Sem saldo diário: ' + state.queueSkipped.map(phoneLabel).join(', ') : ''}` : '';
     document.getElementById('loop-stop-after').disabled = !active || !(state.loopActive || state.queueActive) || state.loopStopping;
     document.getElementById('automation-loop-status').textContent = !supportsLoop ? 'Reinicie o painel para ativar o loop contínuo.' : state.loopActive ? `Loop: rodada ${state.loopCycle || 1} • ${state.loopCompleted || 0} rodada(s) salva(s)${state.loopStopping ? ' • Parando após esta rodada' : ''}` : state.loopCompleted ? `${state.loopCompleted} rodada(s) salva(s) na última execução.` : '';
-    document.getElementById('sync').disabled = state.busy || !state.automationVersion || !state.sharedCameraVersion;
+    latestState = state; connected = true; updateStart();
+    feedback.textContent = pending ? 'Enviando comando para iniciar a tarefa...' : state.busy ? (state.message || 'Operação em andamento. Aguarde.') : notice || (!state.automationVersion || !state.sharedCameraVersion ? 'Reabra o painel atualizado para iniciar.' : state.operation === 'sync' ? state.message : 'Pronto para iniciar. Confira a tarefa e o vídeo.');
     document.getElementById('cancel').disabled = !active;
     document.querySelector('#view-automation .ready-badge').textContent = active ? 'EM ANDAMENTO' : 'AGUARDANDO INÍCIO';
     document.getElementById('automation-video').textContent = state.allVideoName ? `Vídeo em todos: ${state.allVideoName}` : 'Vídeo diferente ou não confirmado em algum celular. Confira a aba Vídeos.';
