@@ -31,6 +31,26 @@ class SharedCameraTests(unittest.TestCase):
         self.assertIn(str(disk), config)
         self.assertIn('4096', (self.avd/'config.ini.before-shared').read_text())
 
+    def test_offline_install_does_not_boot_or_use_adb(self):
+        raw = self.root/'video.i420'; raw.write_bytes(b'a'*4096)
+        start = Mock()
+        with patch.object(self.shared, 'make_disk', return_value=str(self.root/'disk')):
+            self.shared.install('MinutePlay9', 's', 5570, raw, 'video.mov', 100,
+                                'asset', start, lambda s: False)
+        start.assert_not_called()
+        self.t.run.assert_not_called()
+        self.assertTrue(self.t.record.call_args.kwargs['staged'])
+        self.assertFalse(self.t.record.call_args.kwargs['confirmed'])
+
+    def test_pending_source_is_not_confirmed_if_verification_fails(self):
+        self.t.snapshot.return_value = {'installedVideos': {'s': {
+            'staged': True, 'assetId': 'asset'}}}
+        with patch.object(self.shared, 'bindings', return_value={'avd': {'assetId':'asset','rawPath':'raw'}}), \
+             patch.object(self.shared, 'wait_boot'), patch.object(self.shared, 'configure_guest'), \
+             patch.object(self.shared, 'verify', side_effect=RuntimeError('wrong frames')):
+            with self.assertRaises(RuntimeError): self.shared.activate_pending('avd', 's')
+        self.t.record.assert_not_called()
+
     def test_missing_shared_source_blocks_launch(self):
         self.shared.bind('MinutePlay9', {'rawPath': str(self.root/'missing'), 'disk': str(self.root/'disk')})
         with self.assertRaises(RuntimeError): self.shared.arguments('MinutePlay9')

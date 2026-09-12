@@ -5,15 +5,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 from mirror import TouchMirror
 from camera_transfer import Transfers
+from background_video import BackgroundVideo
 from automation import Automation
-from automation_queue import run_queue, capacity_snapshot
-from task_history import task_usage
+from automation_queue import run_queue, capacity_snapshot, wait_for_shutdown
+from task_history import task_usage, daily_task_rows
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
 from product_writer import ProductWriter
 from live_voice import LiveVoice
 from tiktok_live import TikTokLive
+from tiktok_video import TikTokVideo
 from panel_runtime import runtime_identity, find_running_backend
 
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +36,7 @@ with open(LIBRARY_CONFIG,"w",encoding="utf-8") as f:json.dump({"path":VIDEOS},f)
 P=SourceFileLoader("engine",os.path.join(RES,"painel.pyw")).load_module()
 E=object.__new__(P.Painel); E.cancelar_sync=threading.Event(); E.lock_historico=threading.Lock()
 LOCK=threading.Lock(); S={"busy":False,"message":"Sistema pronto.","level":"ok","progress":0,"elapsed":0,"total":0,"task":""}
+PREPARATION_LOCK=threading.Lock(); UPLOAD_LOCK=threading.Lock()
 META_CACHE={}; PROXY_JOBS=set(); PROXY_LOCK=threading.Lock()
 PHONE_NAMES=os.path.join(AREA,"phone-names.json")
 PHONE_NAMES_LOCK=threading.Lock()
@@ -68,7 +71,10 @@ def devices(): return P.descobrir_celulares() or {"MinutePlay":("emulator-5554",
 VOICE=VoiceManager(AREA,RES,hidden)
 WRITER=ProductWriter(AREA)
 LIVE_VOICE=LiveVoice(VOICE,WRITER)
-TIKTOK=TikTokLive(E._adb,devices)
+TIKTOK_VIDEO=TikTokVideo(P.ADB,AREA,P.AVD_HOME,VIDEOS,RES,P.achar,hidden)
+def tiktok_devices():
+    return {p['avd']:(p['serial'],p['serial'].split('-')[1]) for p in TIKTOK_VIDEO.phones()}
+TIKTOK=TikTokLive(E._adb,tiktok_devices)
 
 def status(serial):
     try:
@@ -99,8 +105,9 @@ def analytics(phone_names):
                 value+=sum(max(0.0,float(e.get("segundos",0) or 0)) for e in tasks.values() if isinstance(e,dict))
         recent.append({"date":day,"seconds":value})
     phone_rows=[{"name":name,"seconds":by_phone.get(name,0)} for name in phone_names]
-    task_rows=[{"name":name,"seconds":seconds,"limit":P.LIMITE_TAREFA_SEGUNDOS*max(1,len(phone_names))} for name,seconds in sorted(by_task.items(),key=lambda x:x[1],reverse=True)]
-    return {"todaySeconds":sum(by_task.values()),"totalSeconds":total_all,"activeTasks":len(by_task),"limitSeconds":P.LIMITE_TAREFA_SEGUNDOS,"byTask":task_rows,"byPhone":phone_rows,"last7Days":recent}
+    task_rows=daily_task_rows(data, phone_names, today)
+    return {"day":today,"todaySeconds":sum(by_task.values()),"totalSeconds":total_all,"activeTasks":sum(row["seconds"]>0 for row in task_rows),"limitSeconds":P.LIMITE_TAREFA_SEGUNDOS,"byTask":task_rows,"byPhone":phone_rows,"last7Days":recent}
+
 def video_meta(path):
     st=os.stat(path);key=(path,st.st_mtime_ns,st.st_size)
     if key in META_CACHE:return META_CACHE[key]
@@ -170,9 +177,9 @@ def payload():
             cfg=open(os.path.join(P.AVD_HOME,phone["avd"]+".avd","config.ini"),encoding="utf-8-sig").read()
             phone["storage"]=re.search(r"(?m)^disk.dataPartition.size\s*=\s*(.*)",cfg).group(1).strip()
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
-    known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if installed.get(p["serial"],{}).get("confirmed") else None for p in ps]
+    known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if (installed.get(p["serial"],{}).get("confirmed") or installed.get(p["serial"],{}).get("staged")) else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return
@@ -192,8 +199,9 @@ def start_phone(n,s,p):
     except OSError as exc:
         raise RuntimeError(f"Não foi possível iniciar {n} com {exe}: {exc}. Log: {log_path}") from exc
 def open_minute(s):
-    r=E._adb(s,"shell","monkey","-p","com.bakerdata.minute","-c","android.intent.category.LAUNCHER","1",timeout=15)
-    if r.returncode:raise RuntimeError("Minute nao abriu")
+    for n,(serial,_) in devices().items():
+        if serial==s:SHARED.activate_pending(n,s);break
+    AUTOMATION.launch_minute(s)
 def wait_open(s,end):
     while time.monotonic()<end:
         if status(s)=="online":open_minute(s);return True
@@ -207,14 +215,20 @@ def open_all():
     if not all(ok.values()):raise RuntimeError("algum celular nao concluiu o boot")
     update(busy=False,message="Tudo aberto: administrador e Minute.",level="ok",progress=100)
 def video_control(s,a):
+    for n,(serial,_) in devices().items():
+        if serial==s:SHARED.activate_pending(n,s);break
     subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",os.path.join(RES,"controlar-videocam.ps1"),"-Acao",a,"-Serial",s],check=True,**hidden())
-def prepare_video(name,fill):
+def prepare_video(name,fill,notify=None,background=False):
+    with PREPARATION_LOCK:
+        return _prepare_video(name,fill,notify or update,background)
+
+def _prepare_video(name,fill,notify,background):
     src=os.path.join(VIDEOS,os.path.basename(name))
     if not os.path.isfile(src):raise RuntimeError("video nao encontrado")
     if prepared_cache(src,fill):
-        update(stage="Quadros prontos",progress=100,message="Reutilizando os quadros ja preparados")
+        notify(stage="Quadros prontos",progress=100,message="Reutilizando os quadros ja preparados")
         return os.path.basename(name)
-    os.makedirs(AREA,exist_ok=True);update(message="Preparando quadros sem compressao a partir do original...",progress=1)
+    os.makedirs(AREA,exist_ok=True);notify(message="Preparando quadros sem compressao a partir do original...",progress=1)
     duration=video_meta(src).get("duration",0)
     if duration<=0:raise RuntimeError("Nao foi possivel ler a duracao do video")
     required=int(duration*640*360*1.5*30)+512*1024*1024
@@ -225,25 +239,34 @@ def prepare_video(name,fill):
     cache_dir=os.path.join(AREA,"frame-cache");os.makedirs(cache_dir,exist_ok=True)
     raw_path=os.path.join(cache_dir,str(time.time_ns())+".i420")
     pending=raw_path+".partial"
-    with open(os.path.join(AREA,"camera-conversion.log"),"w",encoding="utf-8") as log:
-        p=subprocess.Popen([ff,"-y","-v","error","-progress","pipe:1","-nostats","-i",src,"-map","0:v:0","-vf",filt,"-r","30","-an","-pix_fmt","yuv420p","-f","rawvideo",pending],stdout=subprocess.PIPE,stderr=log,text=True,**hidden())
+    with open(os.path.join(AREA,"camera-conversion-background.log" if background else "camera-conversion.log"),"w",encoding="utf-8") as log:
+        options=hidden()
+        if background and os.name=="nt":options["creationflags"]=options.get("creationflags",0)|subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        p=subprocess.Popen([ff,"-y","-v","error","-progress","pipe:1","-nostats","-threads","2" if background else "0","-filter_threads","1" if background else "0","-i",src,"-map","0:v:0","-vf",filt,"-r","30","-an","-pix_fmt","yuv420p","-f","rawvideo",pending],stdout=subprocess.PIPE,stderr=log,text=True,**options)
         for line in p.stdout:
             if line.startswith("out_time_us="):
                 try:
                     percent=min(99,int(float(line.split("=",1)[1])/1e6/duration*100))
-                    update(stage="Preparando quadros",progress=percent,message=f"Preparando quadros da camera: {percent}%")
+                    notify(stage="Preparando quadros",progress=percent,message=f"Preparando quadros da camera: {percent}%")
                 except ValueError:pass
-        if p.wait():raise RuntimeError("Falha na preparacao; veja camera-conversion.log")
+        code=p.wait()
+        p.stdout.close()
+        if code:
+            if os.path.isfile(pending):os.remove(pending)
+            raise RuntimeError("Falha na preparação; confira o log de conversão")
     os.replace(pending,raw_path)
-    update(stage="Identificando vídeo",progress=0,message="Identificando o original para reutilizar os quadros...")
+    notify(stage="Identificando vídeo",progress=0,message="Identificando o original para reutilizar os quadros...")
     copied=0;total=os.path.getsize(src);digest=hashlib.sha256()
     with open(src,"rb") as inp:
         while chunk:=inp.read(8*1024**2):
-            digest.update(chunk);copied+=len(chunk);update(progress=int(copied*100/total))
+            digest.update(chunk);copied+=len(chunk);notify(progress=int(copied*100/total))
     data={"name":os.path.basename(name),"sha256":digest.hexdigest(),"fill":bool(fill),"sourceSize":os.path.getsize(src),"sourceMtime":os.stat(src).st_mtime_ns,"rawSize":os.path.getsize(raw_path),"rawPath":raw_path}
     with open(cache_metadata_path(src,fill),"w",encoding="utf-8") as meta:json.dump(data,meta)
-    with open(os.path.join(AREA,"prepared-video.json"),"w",encoding="utf-8") as meta:json.dump(data,meta)
+    if not background:
+        with open(os.path.join(AREA,"prepared-video.json"),"w",encoding="utf-8") as meta:json.dump(data,meta)
     return os.path.basename(name)
+
+BACKGROUND_VIDEO=BackgroundVideo(prepare_video)
 
 def cache_metadata_path(src,fill):
     signature=f"{os.path.abspath(src)}:{os.stat(src).st_mtime_ns}:{os.path.getsize(src)}:{bool(fill)}"
@@ -296,7 +319,7 @@ def install_targets(targets,name,fill):
     cache=prepared_cache(os.path.join(VIDEOS,name),fill)
     existing=TRANSFERS.snapshot()["installedVideos"]
     cache_id=(cache["sha256"]+":"+str(bool(fill))) if cache else None
-    pending_targets=[(n,s) for n,s in targets if not(cache_id and existing.get(s,{}).get("confirmed") and existing[s].get("assetId")==cache_id and existing[s].get("mode")=="shared")]
+    pending_targets=[(n,s) for n,s in targets if not(cache_id and (existing.get(s,{}).get("confirmed") or existing.get(s,{}).get("staged")) and existing[s].get("assetId")==cache_id and existing[s].get("mode")=="shared")]
     if not pending_targets:
         for n,s in targets:TRANSFERS.mark(s,stage="Concluido",bytes=cache["rawSize"],total=cache["rawSize"],percent=100)
         update(busy=False,stage="Concluido",progress=100,message="Este video ja esta confirmado em todos os destinos",level="ok")
@@ -313,16 +336,16 @@ def install_targets(targets,name,fill):
         was_off=status(s)=="off"
         try:
             installed=TRANSFERS.snapshot()["installedVideos"].get(s,{})
-            if installed.get("confirmed") and installed.get("assetId")==asset_id and installed.get("mode")=="shared":
+            if (installed.get("confirmed") or installed.get("staged")) and installed.get("assetId")==asset_id and installed.get("mode")=="shared":
                 TRANSFERS.mark(s,stage="Concluido",bytes=os.path.getsize(raw_path),total=os.path.getsize(raw_path),percent=100)
                 return n,None
             SHARED.install(n,s,dict(devices())[n][1],raw_path,name,os.path.getsize(os.path.join(VIDEOS,name)),asset_id,
-                           start_phone,lambda serial:status(serial)=="online")
+                           start_phone,lambda serial:status(serial)!="off")
             return n,None
         except Exception as exc:
             TRANSFERS.mark(s,stage="Falhou",error=str(exc));return n,str(exc)
         finally:
-            if was_off and len(targets)>1:
+            if was_off and len(targets)>1 and not TRANSFERS.snapshot()["installedVideos"].get(s,{}).get("staged") and status(s)!="off":
                 E._adb(s,"shell","sync",timeout=90,check=True)
                 E._adb(s,"emu","kill",timeout=15)
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(2,len(targets))) as pool:
@@ -337,7 +360,7 @@ def install_targets(targets,name,fill):
             if error:failures.append(n+": "+error)
     remember_video(name)
     if failures:raise RuntimeError(f"instalado em {len(targets)-len(failures)} de {len(targets)}; falhou: "+", ".join(failures))
-    update(busy=False,stage="Concluido",progress=100,message=f"{name} instalado e confirmado nos {len(targets)} celulares.",level="ok")
+    update(busy=False,stage="Concluido",progress=100,message=f"{name}: fonte definida nos {len(targets)} celulares. Desligados serão validados ao abrir, antes de gravar.",level="ok")
 
 def add_phone():
     ds=devices(); idx=max([P.indice_minuteplay(os.path.splitext(n)[0]) or 0 for n in os.listdir(P.AVD_HOME)]+[0])+1;n="MinutePlay"+str(idx);port=str(5554+(idx-1)*2);s="emulator-"+port
@@ -352,6 +375,11 @@ def add_phone():
     update(busy=False,progress=100,message=n+" criado sem login no Minute.",level="ok")
 def sync(options=None):
     options=options or {}
+    since=options.get('usageSince')
+    if since:
+        from datetime import date
+        if date.fromisoformat(since).isoformat()!=since:raise ValueError('Data inicial inválida')
+    AUTOMATION.usage_since=since or None
     targets=devices()
     if options.get("scope")=="online":
         targets={n:(s,p) for n,(s,p) in targets.items() if status(s)=="online"}
@@ -359,6 +387,7 @@ def sync(options=None):
         if status(s)!="online":
             start_phone(n,s,p)
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
+        SHARED.activate_pending(n,s)
         if options.get("autoNavigate",True):
             open_minute(s)
             AUTOMATION.mark(s,stage='Aguardando o Minute abrir')
@@ -382,15 +411,15 @@ def sync(options=None):
                     raise RuntimeError('Há uma gravação para salvar em '+s+'. A fila foi pausada.')
             E._adb(s,'shell','sync',timeout=90,check=True)
             E._adb(s,'emu','kill',timeout=8,check=True)
-            deadline=time.monotonic()+30
-            while status(s)!='off' and time.monotonic()<deadline:time.sleep(1)
-            if status(s)!='off':raise RuntimeError('Celular salvo não desligou: '+s)
-            time.sleep(2)
+            update(message='Aguardando '+s+' desligar após salvar...')
+            wait_for_shutdown(s, E._adb, update)
         return run_queue(AUTOMATION,targets,prepare,TRANSFERS.snapshot()['installedVideos'],
                          str(options.get('taskName','')),True,bool(options.get('repeat',False)),
                          lambda s:status(s)=='online',boot,shutdown,
-                         usage=lambda n:E._uso_tarefa(n,str(options.get('taskName',''))),
-                         lifetime=lambda n:task_usage(E._ler_historico(),n,str(options.get('taskName',''))))
+                         usage=lambda n:AUTOMATION.task_usage(n,str(options.get('taskName',''))),
+                         lifetime=lambda n:task_usage(E._ler_historico(),n,str(options.get('taskName',''))),
+                         randomize=bool(options.get('randomizePhones',True)),
+                         resume_phones=options.get('resumePhones',()))
     update(queueActive=False,queueBatch=0,queueSaved=[],queuePending=[])
     AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
                    str(options.get("taskName", "")),bool(options.get("autoNavigate",True)),
@@ -422,6 +451,10 @@ def action(d):
         E._adb(s,"emu","kill",timeout=8)
     elif a=="minute":open_minute(s)
     elif a=="control":video_control(s,d["control"])
+    elif a=="prepare_background":
+        name=os.path.basename(str(d.get("video","")))
+        if not name or not os.path.isfile(os.path.join(VIDEOS,name)):raise ValueError("Selecione um vídeo da biblioteca")
+        BACKGROUND_VIDEO.start(name,bool(d.get("fill",False)))
     elif a=="install":job(a,lambda:install_video(s,d["video"],d.get("fill",False)))
     elif a=="install_all":job(a,lambda:install_video_all(d["video"],d.get("fill",False)))
     elif a=="add":job(a,add_phone)
@@ -474,6 +507,7 @@ class H(BaseHTTPRequestHandler):
         path=urllib.parse.urlparse(self.path).path
         if path=="/api/version":return self.sendj(RUNTIME_ID)
         if path=="/api/state":return self.sendj(payload())
+        if path=="/api/tiktok/state":return self.sendj(dict(TIKTOK_VIDEO.snapshot(),phones=TIKTOK_VIDEO.phones()))
         if path=="/api/voice/state":return self.sendj(dict(VOICE.snapshot(),live=LIVE_VOICE.snapshot()))
         if path=="/api/voice/audio":
             ident=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id",[""])[0]
@@ -505,7 +539,7 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(data,dict):raise ValueError("Requisição inválida")
                 command=data.get("action")
                 result={"ok":True}
-                if LIVE_VOICE.snapshot()['active'] and command in {'generate','play','unload'}:
+                if LIVE_VOICE.snapshot()['active'] and command in {'generate','play','unload','sale_demo'}:
                     raise ValueError('Pare a sessão contínua antes de usar este controle.')
                 if command=="save_openai_key":WRITER.save_key(data.get('key'))
                 elif command=="save_product":WRITER.save_product(data.get('product'))
@@ -514,11 +548,20 @@ class H(BaseHTTPRequestHandler):
                         data.get('minutes',60),data.get('steps',32),continuous=command=='live_start')
                 elif command=="live_stop":LIVE_VOICE.stop()
                 elif command=="unload":VOICE.unload()
+                elif command=="sale_demo":result["id"]=VOICE.sale_demo()
+                elif command=="sales_config":LIVE_VOICE.configure_sales(data.get('minimum'),data.get('maximum'))
+                elif command=="stock_update":LIVE_VOICE.update_stock(data.get('product'),data.get('remaining'))
+                elif command=="sales_add_batch":result.update(LIVE_VOICE.add_sales(data.get('entries'),data.get('confirmed')))
+                elif command=="sales_add":result.update(LIVE_VOICE.add_sale(data.get('order'),data.get('confirmed')))
                 elif command=="generate":result["id"]=VOICE.generate(data.get("text"),data.get("style","natural"),data.get('steps',32))
                 elif command=="play":VOICE.play(data.get("id"),data.get("output"),data.get("volume",0.8))
                 elif command=="stop":VOICE.stop("playback")
                 elif command=="cancel_generation":VOICE.stop("generation")
                 elif command=="outputs":VOICE.refresh_outputs()
+                elif command=="tiktok_video_connect":
+                    TIKTOK_VIDEO.start(data.get('serial'),data.get('video'),data.get('output'),data.get('volume',.8))
+                elif command in {"tiktok_video_play","tiktok_video_pause","tiktok_video_stop"}:
+                    TIKTOK_VIDEO.control(command.rsplit('_',1)[1])
                 elif command in {"tiktok_check","tiktok_open","tiktok_store","microphone_on","microphone_off"}:
                     if snap()["busy"]:raise ValueError("Aguarde a operação atual do painel terminar.")
                     serial=data.get("serial", "")
@@ -534,11 +577,15 @@ class H(BaseHTTPRequestHandler):
             n=os.path.basename(urllib.parse.unquote(self.headers.get("X-Filename","video.mp4")));z=int(self.headers.get("Content-Length","0"));os.makedirs(VIDEOS,exist_ok=True)
             if not n.lower().endswith(P.EXTS):return self.sendj({"error":"formato de video invalido"},400)
             if not n or z<=0:return self.sendj({"error":"Arquivo vazio"},400)
+            background=self.headers.get("X-Background")=="1"
+            if not UPLOAD_LOCK.acquire(blocking=False):return self.sendj({"error":"Já existe uma importação em andamento"},409)
             with LOCK:
-                if S["busy"]:return self.sendj({"error":"Aguarde a operacao atual"},409)
-                S.update(busy=True,stage="Importando",progress=0,level="info",message="Importando "+n)
+                if S["busy"] and not background:
+                    UPLOAD_LOCK.release()
+                    return self.sendj({"error":"Aguarde a operacao atual"},409)
+                if not background:S.update(busy=True,stage="Importando",progress=0,level="info",message="Importando "+n)
             stem,extension=os.path.splitext(n);suffix=2
-            while os.path.exists(os.path.join(VIDEOS,n)):
+            while os.path.exists(os.path.join(VIDEOS,n)) or os.path.exists(os.path.join(VIDEOS,n)+".uploading"):
                 n=f"{stem} ({suffix}){extension}";suffix+=1
             total=z;pending=os.path.join(VIDEOS,n)+".uploading"
             try:
@@ -548,14 +595,16 @@ class H(BaseHTTPRequestHandler):
                         q=self.rfile.read(min(z,8*1024*1024))
                         if not q:raise RuntimeError("Upload interrompido")
                         f.write(q);z-=len(q)
-                        update(progress=int((total-z)*100/total),message="Importando "+n)
+                        if not background:update(progress=int((total-z)*100/total),message="Importando "+n)
                 os.replace(pending,os.path.join(VIDEOS,n))
-                update(busy=False,progress=100,message=n+" importado",stage="Concluido",level="ok")
+                if not background:update(busy=False,progress=100,message=n+" importado",stage="Concluido",level="ok")
                 return self.sendj({"ok":True,"name":n})
             except Exception as exc:
                 if os.path.isfile(pending):os.remove(pending)
-                update(busy=False,level="error",message=str(exc))
+                if not background:update(busy=False,level="error",message=str(exc))
                 return self.sendj({"error":str(exc)},400)
+            finally:
+                UPLOAD_LOCK.release()
         try:d=json.loads(self.rfile.read(int(self.headers.get("Content-Length","0"))) or b"{}");action(d);self.sendj({"ok":True},202)
         except Exception as x:self.sendj({"error":str(x)},400)
 def open_ui():
@@ -584,7 +633,7 @@ def main():
         if "--no-open" not in sys.argv:open_ui()
         return
     server=None
-    for candidate in range(first_port,first_port+8):
+    for candidate in range(first_port,first_port+32):
         try:server=PanelServer(("127.0.0.1",candidate),H)
         except OSError:continue
         PORT=candidate

@@ -97,6 +97,16 @@ def generate(request):
     if not np.isfinite(data).all() or data.size < rate // 4:
         raise RuntimeError('O modelo produziu áudio inválido. Tente uma frase mais curta.')
     path = Path(request['wav'])
+    if request.get('saleDemo'):
+        # A short original two-tone bell, followed by the requested speech.
+        timeline = np.arange(int(rate * .85), dtype=np.float32) / rate
+        bell = np.zeros_like(timeline)
+        for delay, frequency in ((0, 1318.51), (.16, 1760.0)):
+            elapsed = np.maximum(timeline - delay, 0)
+            envelope = (timeline >= delay) * np.minimum(elapsed / .005, 1) * np.exp(-elapsed * 7)
+            bell += .18 * envelope * (np.sin(2 * np.pi * frequency * elapsed) +
+                                     .25 * np.sin(2 * np.pi * frequency * 2.76 * elapsed))
+        data = np.concatenate((bell, np.zeros(int(rate * .2), dtype=np.float32), data))
     partial = path.with_suffix('.partial.wav')
     sf.write(partial, data, rate, subtype='PCM_16')
     partial.replace(path)

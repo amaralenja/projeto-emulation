@@ -29,3 +29,14 @@ A busca usa o título completo, preservando cedilha e acentos. A escrita usa UiA
 Instale essa dependência com setup/INSTALAR-BUSCA-UNICODE.ps1. O instalador de PC novo também executa essa etapa. Os pacotes ficam em LOCALAPPDATA/emulation-cam/automation-runtime. Referência técnica: https://github.com/openatx/uiautomator2 .
 
 A aba Automação mostra RAM livre e total, celulares adicionais que cabem e total simultâneo estimado, atualizados a cada consulta de estado. O cálculo usa a mesma reserva e orçamento da fila; é uma estimativa e não uma garantia de desempenho. Não fecha outros aplicativos.
+# Recuperação da abertura do Minute — v2.3.4
+
+A abertura agora usa `am start` com a intenção de launcher, em lugar do processo
+`monkey`, que excedeu o prazo de 15 segundos durante uma rodada. Antes de abrir,
+confere se o aplicativo já está em primeiro plano. Após timeout, confere novamente
+para não tratar um comando concluído com resposta atrasada como falha. Há até
+três tentativas, com prazo de 30 segundos por comando de abertura. A confirmação
+da tela e da tarefa continua obrigatória antes de gravar.
+
+Validação: testes cobrem recuperação após timeout, falha transitória e esgotamento
+das tentativas. Gravações já salvas e limites diários são preservados ao retomar.

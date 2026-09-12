@@ -1,5 +1,6 @@
 """Minute navigation and per-device recording deadlines."""
 import concurrent.futures
+import json
 import math
 import re
 import subprocess
@@ -10,6 +11,32 @@ import xml.etree.ElementTree as ET
 from unicode_search import write_query, exact_text
 
 MAX_SECONDS = 29 * 60 + 59
+
+
+def confirmed_recording_seconds(raw, session):
+    session = re.sub(r'_\d+$', '', session)
+    decoder = json.JSONDecoder()
+    text = raw.decode('utf-8', 'replace')
+    accepted = False
+    uploads = {}
+    for match in re.finditer(r'\{', text):
+        try:
+            obj, _ = decoder.raw_decode(text, match.start())
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or obj.get('sessionId') != session:
+            continue
+        if 'accepted' in obj:
+            accepted = obj.get('accepted') is True and obj.get('status') == 'ended'
+        if 'durationMs' in obj and obj.get('id'):
+            uploads[obj['id']] = obj
+    if not accepted or not uploads or any(o.get('status') != 'done' for o in uploads.values()):
+        return None
+    try:
+        seconds = sum(float(o['durationMs']) / 1000 for o in uploads.values())
+    except (ValueError, TypeError):
+        return None
+    return seconds if math.isfinite(seconds) and 0 < seconds <= MAX_SECONDS else None
 
 
 def normalize(value):
@@ -47,6 +74,15 @@ class Automation:
         self.lock = threading.Lock()
         self.rows = {}
         self.stop_after_round = threading.Event()
+        self.usage_since = None
+
+    def task_usage(self, phone, task):
+        if not self.usage_since:
+            return self.e._uso_tarefa(phone, task)
+        from task_history import task_usage
+        with self.e.lock_historico:
+            history = self.e._ler_historico()
+        return sum(task_usage(history, phone, task, day) for day in history.get('dias', {}) if day >= self.usage_since)
 
     def request_stop_after_round(self):
         self.stop_after_round.set()
@@ -63,6 +99,22 @@ class Automation:
     def check_cancel(self):
         if self.e.cancelar_sync.is_set():
             raise InterruptedError('Automação interrompida')
+
+    def wait_preparation_connection(self, serial, timeout=60):
+        deadline = time.monotonic() + timeout
+        stable = 0
+        while time.monotonic() < deadline:
+            self.check_cancel()
+            try:
+                result = self.e._adb(serial, 'shell', 'getprop', 'sys.boot_completed', timeout=5)
+                stable = stable + 1 if result.returncode == 0 and result.stdout.strip() == '1' else 0
+                if stable >= 3:
+                    return
+            except (RuntimeError, subprocess.TimeoutExpired):
+                stable = 0
+            if self.e.cancelar_sync.wait(2):
+                self.check_cancel()
+        raise RuntimeError('O celular não estabilizou a conexão durante a preparação: ' + serial)
 
     def xml(self, serial):
         path = f'/data/local/tmp/minute-automation-{threading.get_ident()}.xml'
@@ -110,11 +162,52 @@ class Automation:
             time.sleep(.25)
         raise RuntimeError('Não foi possível girar para a esquerda')
 
+    def launch_minute(self, serial):
+        # Start the launcher activity directly instead of using the monkey event
+        # runner, which can hang during a cold boot even after opening the app.
+        for attempt in range(3):
+            try:
+                if self.minute_foreground(serial):
+                    return
+            except (RuntimeError, subprocess.TimeoutExpired):
+                pass
+            try:
+                result = self.e._adb(serial, 'shell', 'am', 'start', '-n',
+                    'com.bakerdata.minute/.MainActivity', timeout=30)
+                diagnostics = result.stdout + '\n' + (result.stderr if isinstance(result.stderr, str) else '')
+                if result.returncode == 0 and not re.search(r'^\s*Error', diagnostics, re.MULTILINE):
+                    return
+            except subprocess.TimeoutExpired:
+                # A lost/late ADB acknowledgement does not mean launch failed.
+                try:
+                    if self.minute_foreground(serial):
+                        return
+                except (RuntimeError, subprocess.TimeoutExpired):
+                    pass
+            if attempt < 2:
+                time.sleep(1)
+        raise RuntimeError('O Minute não abriu em ' + serial + ' após 3 tentativas. Confira a resposta do celular.')
+
     def hide_keyboard(self, serial):
-        state = self.e._adb(serial, 'shell', 'dumpsys', 'input_method', timeout=8, check=True).stdout
-        if re.search(r'(?:mInputShown|isInputViewShown)=true', state):
-            # Submit the search; BACK can exit the app when IME state is stale.
-            self.e._adb(serial, 'shell', 'input', 'keyevent', '66', timeout=8, check=True)
+        # Stop the dump after the service visibility flag, before the IME's huge
+        # client diagnostics. Some keyboards fail while dumping those clients.
+        command = 'dumpsys input_method | grep -m 1 -E "mInputShown=|isInputViewShown="'
+        for attempt in range(3):
+            self.check_cancel()
+            try:
+                result = self.e._adb(serial, 'shell', command, timeout=8, check=False)
+                visible = re.search(r'(?:mInputShown|isInputViewShown)=(true|false)\b', result.stdout)
+                if result.returncode == 0 and visible:
+                    if visible[1] == 'true':
+                        # Submit search; BACK can leave the app with stale IME state.
+                        self.e._adb(serial, 'shell', 'input', 'keyevent', '66', timeout=8, check=True)
+                    return
+            except subprocess.TimeoutExpired:
+                pass
+            if attempt < 2:
+                if self.e.cancelar_sync.wait(.5):
+                    self.check_cancel()
+        raise RuntimeError('Não foi possível verificar o teclado em ' + serial + ' após 3 tentativas. Confira a conexão do celular.')
 
     def minute_foreground(self, serial):
         raw = self.e._adb(serial, 'shell', 'dumpsys', 'activity', 'activities', timeout=8, check=True).stdout
@@ -139,14 +232,15 @@ class Automation:
     def task_list(self, serial):
         left_camera = False
         reopened = False
+        system_waits = 0
+        tips_dismissed = False
         for _ in range(10):
             self.check_cancel()
             if not self.minute_foreground(serial):
                 if reopened:
                     raise RuntimeError('O Minute não ficou em primeiro plano; confira login ou permissões')
                 self.mark(serial, stage='Reabrindo o Minute')
-                self.e._adb(serial, 'shell', 'monkey', '-p', 'com.bakerdata.minute',
-                            '-c', 'android.intent.category.LAUNCHER', '1', timeout=20, check=True)
+                self.launch_minute(serial)
                 reopened = True
                 time.sleep(1)
                 continue
@@ -163,6 +257,24 @@ class Automation:
                 raise RuntimeError('Não consegui reconhecer a tela do Minute; navegação interrompida')
             if any(n.get('resource-id') in {'record-accept', 'minute-save'} for n in nodes):
                 raise RuntimeError('Há uma gravação na tela de revisão; salve ou descarte antes de iniciar outra')
+            system_wait = next((n for n in nodes if n.get('resource-id') == 'android:id/aerr_wait' and self.visible(n)), None)
+            if system_wait is not None:
+                if system_waits >= 2:
+                    raise RuntimeError('O Android continua sem responder após duas tentativas de aguardar; confira o celular')
+                self.mark(serial, stage='Android sem responder — aguardando recuperação')
+                self.tap(serial, system_wait)
+                system_waits += 1
+                if self.e.cancelar_sync.wait(5):
+                    self.check_cancel()
+                continue
+            tips = next((n for n in nodes if n.get('resource-id') == 'recording-tips-got-it' and self.visible(n)), None)
+            if tips is not None:
+                if not tips_dismissed:
+                    self.mark(serial, stage='Fechando dicas do Minute')
+                    self.tap(serial, tips)
+                    tips_dismissed = True
+                time.sleep(1)
+                continue
             nav = next((n for n in nodes if n.get('resource-id') == 'nav-index' and self.visible(n)), None)
             if nav is not None:
                 self.tap(serial, nav)
@@ -171,6 +283,12 @@ class Automation:
             close = next((n for n in nodes if n.get('resource-id') in {'record-close', 'record-new-task'} and self.visible(n)), None)
             if close is not None:
                 self.tap(serial, close)
+            elif not left_camera and self.minute_foreground(serial) and self.e._camera_pronta(serial) is not None:
+                # Native preview may return a valid but buttonless XML tree.
+                # This is preparation only; review/save controls were checked above.
+                self.e._adb(serial, 'shell', 'input', 'keyevent', '4', timeout=8, check=True)
+                left_camera = True
+                time.sleep(1)
             else:
                 time.sleep(.5)
         raise RuntimeError('Não consegui abrir a lista de tarefas; confira a tela do Minute')
@@ -185,6 +303,10 @@ class Automation:
                     if self.e._camera_pronta(serial) is not None:
                         return
                     nodes = list(self.xml(serial).iter('node'))
+                    # Navigation handles Android's ANR dialog with a bounded
+                    # Wait action; do not wait forever for the obscured app.
+                    if any(n.get('resource-id') == 'android:id/aerr_wait' for n in nodes):
+                        return
                     if any(n.get('package') == 'com.bakerdata.minute' and
                            (n.get('resource-id') in {'nav-index', 'home-search-input', 'record-close',
                                                     'record-new-task', 'record-accept', 'minute-save'} or
@@ -360,7 +482,7 @@ class Automation:
         if not targets:
             raise ValueError('Nenhum celular selecionado')
         records = [installed.get(s, {}) for s, _ in targets.values()]
-        if any(not r.get('confirmed') or not r.get('assetId') for r in records):
+        if any(not (r.get('confirmed') or (r.get('staged') and r.get('mode') == 'shared')) or not r.get('assetId') for r in records):
             raise ValueError('Instale e confirme o vídeo na aba Vídeos em todos os celulares participantes.')
         if len({r['assetId'] for r in records}) != 1:
             raise ValueError('Os celulares têm vídeos diferentes. Use “Usar em todos” na aba Vídeos.')
@@ -368,7 +490,7 @@ class Automation:
             raise ValueError('Informe o nome completo da tarefa para a busca automática.')
         self.update(task=task, elapsed=0, total=0, progress=0, message='Preparando os celulares...')
         durations = {}
-        def ready(item):
+        def ready(item, attempt=0):
             name, (s, port) = item
             try:
                 self.check_cancel()
@@ -387,12 +509,23 @@ class Automation:
                     raise RuntimeError('A câmera da tarefa não está pronta')
                 durations[s] = recording_duration(value)
                 if auto:
-                    remaining = 7200 - self.e._uso_tarefa(name, task)
+                    remaining = 7200 - self.task_usage(name, task)
                     if remaining < 90:
                         raise RuntimeError('Limite diário de 2 horas insuficiente para esta gravação')
                     durations[s] = min(durations[s], remaining)
-                self.mark(s, stage='Pronto', total=durations[s])
+                self.mark(s, stage='Pronto', total=durations[s], error='')
             except Exception as exc:
+                transient = re.search(r"device\s+['\"]?[^\n]*not found|device offline|device still authorizing|no devices/emulators found", str(exc), re.I)
+                # Only retry preparation: no recording button has been pressed.
+                # Never replay commands during capture or saving.
+                if transient and 'unauthorized' not in str(exc).lower() and attempt < 2:
+                    self.mark(s, stage='Reconectando antes de gravar', error=str(exc))
+                    try:
+                        self.wait_preparation_connection(s)
+                    except Exception as reconnect_error:
+                        self.mark(s, stage='Erro na preparação', error=str(reconnect_error))
+                        raise
+                    return ready(item, attempt + 1)
                 self.mark(s, stage='Erro na preparação', error=str(exc))
                 raise
         errors = []
@@ -428,7 +561,7 @@ class Automation:
                 task_ids[s] = task_id
                 if auto and task_key(actual) != task_key(task):
                     raise RuntimeError('Tarefa aberta diferente da escolhida: '+actual)
-                if self.e._uso_tarefa(name, actual)+durations[s] > 7200:
+                if self.task_usage(name, actual)+durations[s] > 7200:
                     raise RuntimeError('Limite diário insuficiente')
                 self.mark(s, task=actual, stage='Sincronizando o início')
                 barrier.wait(timeout=90)
@@ -438,12 +571,31 @@ class Automation:
                 self.update(task=actual)
                 self.e._escrever_controle(s, 'play', generation)
                 started = time.monotonic()
-                remaining_daily = 7200-self.e._uso_tarefa(name, actual)
+                remaining_daily = 7200-self.task_usage(name, actual)
                 deadline = min(stop_deadline(started, trigger_time, durations[s]), trigger_time+remaining_daily-1)
                 target = deadline-started
                 if target < 60:
                     raise RuntimeError('Preparação demorou demais para gravar com segurança')
+                next_health_check = started
+                last_growth = started
+                last_size = 0
+                recording_path = '/data/user/0/com.bakerdata.minute/files/recordings/' + session + '/video.mp4'
                 while True:
+                    now = time.monotonic()
+                    if now >= next_health_check:
+                        next_health_check = now + 10
+                        if not self.minute_foreground(s) or self.e._camera_pronta(s) is None:
+                            # The camera may already be closed. Never tap blindly:
+                            # a stop tap could start a new recording instead.
+                            triggered = False
+                            raise RuntimeError('Minute saiu da câmera durante a gravação. Confira o trecho pendente; tempo não contabilizado.')
+                        raw = self.e._shell_root(s, 'stat -c %s ' + recording_path,
+                                                 timeout=12, check=True).stdout.strip()
+                        current_size = int(raw.splitlines()[-1])
+                        if current_size > last_size:
+                            last_size, last_growth = current_size, now
+                        elif now - last_growth >= 30:
+                            raise RuntimeError('O arquivo de vídeo parou de crescer por 30 segundos. Confira a gravação antes de retomar.')
                     elapsed = min(time.monotonic()-started, target)
                     self.mark(s, stage='Gravando', elapsed=elapsed, total=target, percent=min(99, int(elapsed/target*100)))
                     if self.e.cancelar_sync.wait(min(.1, max(0, deadline-time.monotonic()))) or time.monotonic() >= deadline:
@@ -458,7 +610,14 @@ class Automation:
                 if elapsed < 60:
                     self.mark(s, stage='Interrompido: gravação curta; confira o Minute')
                     return
-                self.save(s)
+                try:
+                    self.save(s)
+                except RuntimeError:
+                    raw = self.e._shell_root_bytes(s, 'cat /data/user/0/com.bakerdata.minute/files/mmkv/recording-store', timeout=12)
+                    confirmed = confirmed_recording_seconds(raw, session)
+                    if confirmed is None:
+                        raise
+                    recorded_seconds = min(recorded_seconds, confirmed)
                 self.e._somar_uso_tarefa(name, actual, recorded_seconds)
                 self.mark(s, stage='Salvo', percent=100, elapsed=elapsed)
             except Exception as exc:
@@ -469,7 +628,7 @@ class Automation:
                     try:
                         # Back cancels countdown or leaves capture; a second record
                         # tap could START capture after an unconfirmed first tap.
-                        if capture_confirmed:
+                        if capture_confirmed and self.minute_foreground(s) and self.e._camera_pronta(s) is not None:
                             self.e._tocar_botao_gravacao(s)
                         elif self.minute_foreground(s) and self.e._camera_pronta(s) is not None:
                             self.e._adb(s, 'shell', 'input', 'keyevent', '4', timeout=12, check=True)
@@ -510,15 +669,26 @@ class Automation:
             else:
                 raise RuntimeError('A tela de gravação não encerrou; confira o celular imediatamente')
             time.sleep(.5)
-            size = self.e._adb(serial, 'shell', 'wm', 'size', timeout=5, check=True).stdout
-            w, h = map(int, re.findall(r'(\d+)x(\d+)', size)[-1])
-            self.e._adb(serial, 'shell', 'input', 'tap', str(w//2), str(round(h*.52)), timeout=5, check=True)
         end = time.monotonic()+45
         clicked = False
+        confirmed_clicked = False
+        preview_recovery = False
         while time.monotonic() < end:
             try:
                 root = self.xml(serial)
             except (subprocess.TimeoutExpired, RuntimeError, ET.ParseError):
+                # A moving preview can prevent UIAutomator from ever reaching
+                # idle. Recover once, only before any save click and after the
+                # native camera has closed; never toggle a readable preview.
+                if pause_preview and not clicked and not preview_recovery:
+                    preview_recovery = True
+                    if self.minute_foreground(serial) and self.e._camera_pronta(serial) is None:
+                        raw = self.e._adb(serial, 'shell', 'wm', 'size', timeout=5, check=True).stdout
+                        sizes = re.findall(r'(\d+)x(\d+)', raw)
+                        if sizes:
+                            width, height = map(int, sizes[-1])
+                            self.e._adb(serial, 'shell', 'input', 'tap', str(width//2), str(height//2), timeout=5, check=True)
+                            end = time.monotonic()+45
                 time.sleep(.5)
                 continue
             nodes = list(root.iter('node'))
@@ -528,9 +698,10 @@ class Automation:
             if confirm:
                 accept = next((n for n in nodes if n.get('clickable') == 'true' and
                                (n.get('content-desc') == 'Salvar' or n.get('text') == 'Salvar')), None)
-                if accept is not None:
+                if accept is not None and not confirmed_clicked:
                     self.tap(serial, accept)
                     clicked = True
+                    confirmed_clicked = True
                     time.sleep(.5)
                     continue
             button = next((n for n in nodes if n.get('resource-id') in {'minute-save', 'record-accept'}), None)

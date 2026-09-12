@@ -107,9 +107,9 @@ chmod 755 {remote}/service.sh
                   'name': name, 'bytes': total}
         if not was_online:
             self.bind(avd, record)
-            t.record(serial, name, total, source_size, asset_id, confirmed=False, mode='shared')
-            start(avd, serial, port)
-            self.wait_boot(serial)
+            t.record(serial, name, total, source_size, asset_id, confirmed=False, mode='shared', staged=True)
+            t.mark(serial, stage='Fonte pronta — validar ao abrir', bytes=total, percent=100, error='')
+            return
         self.configure_guest(serial, raw_path)
         t.record(serial, name, total, source_size, asset_id, confirmed=False, mode='shared')
         if was_online:
@@ -124,6 +124,24 @@ chmod 755 {remote}/service.sh
         self.verify(serial, raw_path)
         t.record(serial, name, total, source_size, asset_id, mode='shared')
         t.mark(serial, stage='Concluido', bytes=total, percent=100, error='')
+
+    def activate_pending(self, avd, serial):
+        """Validate the staged disk before allowing this phone to record."""
+        with self.lock:
+            item = self.transfers.snapshot()['installedVideos'].get(serial, {})
+            if not item.get('staged'):
+                return
+            binding = self.bindings().get(avd, {})
+            if binding.get('assetId') != item.get('assetId'):
+                raise RuntimeError('Fonte pendente não corresponde ao disco do celular.')
+            raw = binding['rawPath']
+            self.transfers.mark(serial, stage='Validando fonte ao abrir', percent=85)
+            self.wait_boot(serial)
+            self.configure_guest(serial, raw)
+            self.verify(serial, raw)
+            self.transfers.record(serial, item['name'], item['bytes'], item['sourceBytes'],
+                                  item['assetId'], mode='shared')
+            self.transfers.mark(serial, stage='Concluido', percent=100, error='')
 
     def wait_boot(self, serial):
         end = time.monotonic()+240

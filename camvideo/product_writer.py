@@ -7,7 +7,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-MODEL = 'gpt-4.1-mini'
+MODEL = 'gpt-4o-mini'
 
 
 def protect(data, decrypt=False):
@@ -79,7 +79,7 @@ class ProductWriter:
         temporary.replace(self.product_path)
         return product
 
-    def write(self, product, previous=()):
+    def write(self, product, previous=(), stock=None):
         product = validate_product(product)
         payload = dict(model=MODEL, store=False, max_output_tokens=1100,
             instructions='Escreva uma fala de apresentação de produto para uma live em português brasileiro. '
@@ -94,6 +94,18 @@ class ProductWriter:
             text={'format': {'type': 'json_schema', 'name': 'fala_produto', 'strict': True,
                 'schema': {'type': 'object', 'properties': {'text': {'type': 'string'}},
                            'required': ['text'], 'additionalProperties': False}}})
+        remaining = stock.get('remaining') if isinstance(stock, dict) else None
+        if remaining is not None:
+            if type(remaining) is not int or not 1 <= remaining <= 1000000:
+                raise ValueError('Quantidade promocional inválida ou esgotada.')
+            payload['input'] = json.dumps(dict(produto=product, falas_anteriores=list(previous)[-3:],
+                unidades_restantes_no_valor_promocional=remaining), ensure_ascii=False)
+            payload['instructions'] += (' Mencione uma vez a quantidade exata de unidades restantes no valor promocional '
+                'informada no campo unidades_restantes_no_valor_promocional. Esse campo substitui qualquer estoque '
+                'nos outros dados ou falas anteriores. Não invente prazo, demanda, contagem regressiva ou desconto. '
+                'Não diga últimas unidades; diga apenas a quantidade confirmada no valor promocional.')
+        else:
+            payload['instructions'] += ' Não mencione estoque nem quantidade disponível, mesmo que apareçam nas falas anteriores.'
         request = urllib.request.Request('https://api.openai.com/v1/responses',
             data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + self.key(),
                                                      'Content-Type': 'application/json'})

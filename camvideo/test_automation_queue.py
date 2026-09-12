@@ -2,10 +2,37 @@ import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from automation_queue import run_queue, additional_capacity, GIB, capacity_snapshot
+from automation_queue import run_queue, additional_capacity, GIB, capacity_snapshot, wait_for_shutdown
 
 
 class QueueTests(unittest.TestCase):
+    def test_slow_shutdown_waits_for_three_confirmed_absences(self):
+        now = [0]
+        present = SimpleNamespace(returncode=0, stdout='List of devices attached\ns1\tdevice\n')
+        absent = SimpleNamespace(returncode=0, stdout='List of devices attached\n')
+        adb = Mock(side_effect=[present]*90 + [absent, present, absent, absent, absent])
+        with patch('automation_queue.time.monotonic', side_effect=lambda: now[0]), patch('automation_queue.time.sleep', side_effect=lambda n: now.__setitem__(0, now[0]+n)):
+            wait_for_shutdown('s1', adb, Mock())
+        self.assertGreater(now[0], 120)
+        self.assertEqual(adb.call_count, 95)
+        self.assertTrue(all(c.args == ('s1', 'devices') for c in adb.call_args_list))
+
+    def test_adb_failure_does_not_confirm_shutdown(self):
+        now = [0]
+        adb = Mock(return_value=SimpleNamespace(returncode=1, stdout=''))
+        with patch('automation_queue.time.monotonic', side_effect=lambda: now[0]), patch('automation_queue.time.sleep', side_effect=lambda n: now.__setitem__(0, now[0]+n)):
+            with self.assertRaisesRegex(RuntimeError, 'não confirmou'):
+                wait_for_shutdown('s1', adb, Mock(), timeout=10)
+
+    def test_random_order_visits_every_eligible_phone_once(self):
+        a, targets, installed, active, calls, boot, shutdown, memory = self.setup_queue()
+        with patch('automation_queue.random.shuffle', side_effect=lambda items: items.reverse()) as shuffle:
+            run_queue(a, targets, Mock(), installed, 'task', True, False,
+                      lambda s: s in active, boot, shutdown, memory,
+                      usage=lambda n: 7200 if n == 'p0' else 0, randomize=True)
+        self.assertEqual([n for batch in calls for n in batch], ['p4', 'p3', 'p2', 'p1'])
+        shuffle.assert_called_once()
+
     def test_live_capacity_changes_when_memory_is_freed(self):
         with patch('automation_queue.memory_info', return_value={'freeBytes':3*GIB,'totalBytes':16*GIB}):
             self.assertEqual(capacity_snapshot(7,2)['additional'],0)
@@ -28,6 +55,24 @@ class QueueTests(unittest.TestCase):
                   lambda s: s in active, boot, shutdown, memory, lambda n:7200)
         self.assertFalse(active)
         self.assertFalse(calls)
+
+    def test_repeat_rotates_all_phones_across_cycles_until_daily_limit(self):
+        a, targets, installed, active, calls, boot, shutdown, memory = self.setup_queue()
+        totals = {name: 0 for name in targets}
+        original = a._run_cycle
+        def save_cycle(batch, *args, **kwargs):
+            original(batch, *args, **kwargs)
+            for name in batch:
+                totals[name] += 3600
+        a._run_cycle = save_cycle
+        run_queue(a, targets, Mock(), installed, 'task', True, True,
+                  lambda s: s in active, boot, shutdown, memory,
+                  lambda name: totals[name])
+        for name in targets:
+            self.assertEqual(sum(name in batch for batch in calls), 2)
+            self.assertEqual(totals[name], 7200)
+        self.assertTrue(all(len(batch) <= 2 for batch in calls))
+        self.assertEqual(a.update.call_args.kwargs['loopActive'], False)
 
     def setup_queue(self, failure=False):
         targets = {f'p{i}': (f's{i}', i) for i in range(5)}

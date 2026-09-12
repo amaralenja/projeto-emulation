@@ -1,10 +1,31 @@
 """Run Minute recordings in memory-bounded batches, never advancing after failure."""
 import ctypes
+import random
+import time
 from task_history import priority
 
 GIB = 1024 ** 3
 RESERVE = int(2.5 * GIB)
 PHONE_BUDGET = 3 * GIB  # 2 GiB guest plus rendering/host overhead.
+
+
+def wait_for_shutdown(serial, adb, update, timeout=300):
+    """Wait for removal from ADB, without querying a shutting-down Android shell."""
+    started = time.monotonic()
+    absent = 0
+    while time.monotonic() - started < timeout:
+        try:
+            result = adb(serial, 'devices', timeout=8)
+            valid = result.returncode == 0 and 'List of devices attached' in result.stdout
+            present = any(line.split() and line.split()[0] == serial for line in result.stdout.splitlines())
+            absent = absent + 1 if valid and not present else 0
+        except Exception:
+            absent = 0
+        if absent >= 3:
+            return
+        update(message=f'Aguardando {serial} desligar após salvar ({int(time.monotonic()-started)}s; até {timeout}s)...')
+        time.sleep(2)
+    raise RuntimeError('Celular salvo não confirmou desligamento em '+str(timeout)+' segundos: '+serial)
 
 
 def memory_info():
@@ -39,7 +60,8 @@ def additional_capacity(available):
 
 
 def run_queue(automation, targets, prepare, installed, task, auto, repeat,
-              online, boot, shutdown, available=memory_available, usage=lambda n: 0, lifetime=lambda n: 0):
+              online, boot, shutdown, available=memory_available, usage=lambda n: 0, lifetime=lambda n: 0,
+              randomize=False, resume_phones=()):
     if not targets:
         raise ValueError('Nenhum celular participante.')
     if auto and not task.strip():
@@ -48,7 +70,7 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
         raise ValueError('As rodadas por RAM precisam da busca automática da tarefa.')
     eligible, _ = priority(targets, usage, lifetime)
     records = [installed.get(s, {}) for s, _ in eligible.values()]
-    if any(not r.get('confirmed') or not r.get('assetId') for r in records):
+    if any(not (r.get('confirmed') or (r.get('staged') and r.get('mode') == 'shared')) or not r.get('assetId') for r in records):
         raise ValueError('Use o mesmo vídeo em todos os participantes na aba Vídeos antes de iniciar.')
     if records and len({r['assetId'] for r in records}) != 1:
         raise ValueError('Os participantes têm vídeos diferentes. Use “Usar em todos”.')
@@ -62,6 +84,14 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
         while True:
             cycle += 1
             pending, skipped = priority(targets, usage, lifetime)
+            if randomize:
+                order = list(pending)
+                random.shuffle(order)
+                pending = {name: pending[name] for name in order}
+            if cycle == 1 and resume_phones:
+                order = [name for name in resume_phones if name in pending]
+                order += [name for name in pending if name not in order]
+                pending = {name: pending[name] for name in order}
             saved = []
             update(loopCycle=cycle, queueSaved=saved, queuePending=list(pending), queueSkipped=skipped)
             if not pending:
@@ -71,13 +101,15 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
                 automation.check_cancel()
                 if automation.stop_after_round.is_set():
                     return
-                pending, newly_skipped = priority(pending, usage, lifetime)
+                eligible_now, newly_skipped = priority(pending, usage, lifetime)
+                pending = ({name: pair for name, pair in pending.items() if name in eligible_now}
+                           if randomize else eligible_now)
                 skipped = list(dict.fromkeys(skipped + newly_skipped))
                 update(queuePending=list(pending), queueSkipped=skipped)
                 if not pending:
                     break
                 live = {n for n, pair in targets.items() if online(pair[0])}
-                slots = max(1, len(live) + additional_capacity(available()))
+                slots = min(3, max(1, len(live) + additional_capacity(available())))
                 chosen = dict(list(pending.items())[:slots])
                 # Higher-usage phones must not occupy the slots of lower-usage ones.
                 # The backend refuses shutdown if a camera or review is open.

@@ -114,7 +114,15 @@ class VoiceManager:
     def environment(self):
         return dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1', HF_HUB_DISABLE_TELEMETRY='1')
 
-    def generate(self, text, style='natural', steps=32, target_duration=None, seed=42):
+    def sale_demo(self):
+        import secrets
+        name = secrets.choice(('Ana Gabriela', 'Mariana', 'Juliana', 'Camila', 'Beatriz'))
+        text = ('Simulação de venda. Este é um teste com nome fictício. '
+                f'{name} comprou neste exemplo. Obrigada pela confiança, {name}! '
+                'Fim da simulação.')
+        return self.generate(text, sale_demo=True)
+
+    def generate(self, text, style='natural', steps=32, target_duration=None, seed=42, sale_demo=False):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2400:
             raise ValueError('Escreva um texto de 1 a 2400 caracteres.')
         if not isinstance(style, str) or style not in STYLES:
@@ -130,7 +138,7 @@ class VoiceManager:
         meta = dict(id=ident, text=text.strip(), style=style, created=time.time(), model='OmniVoice',
                     voice='Feminina em português', url='/api/voice/audio?id=' + ident)
         self.start('generation', dict(kind='generate', text=text.strip(), style=style, wav=str(self.clip_path(ident)),
-                   steps=steps, targetDuration=target_duration, seed=seed), meta)
+                     steps=steps, targetDuration=target_duration, seed=seed, saleDemo=sale_demo), meta)
         return ident
 
     def play(self, ident, output, volume=0.8):
@@ -219,6 +227,10 @@ class VoiceManager:
                 job['cancelled'] = True
                 if job['process'].poll() is None:
                     self.terminate_worker(job['process'])
+                    job['process'].wait(timeout=15)
+                if job['process'].stdin:
+                    job['process'].stdin.close()
+                self.engines[channel] = None
 
     def terminate_worker(self, proc):
         # Windows venv python.exe is a launcher: stopping only it leaves the
@@ -243,7 +255,9 @@ class VoiceManager:
             if any(self.jobs.values()):
                 return
             for channel, proc in self.engines.items():
-                if proc is not None and proc.poll() is None:
+                if proc is not None:
                     # Graceful EOF: no forced process termination for idle workers.
                     proc.stdin.close()
+                    try: proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired: self.terminate_worker(proc)
                 self.engines[channel] = None

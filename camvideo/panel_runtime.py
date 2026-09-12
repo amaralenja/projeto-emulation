@@ -5,11 +5,11 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = '2.3.2'
+APP_VERSION = '2.3.20'
 
-BACKEND_FILES = ('modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
+BACKEND_FILES = ('background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
                  'shared_camera.py', 'mirror.py', 'storage.py', 'voice_manager.py',
-                 'voice_worker.py', 'tiktok_live.py', 'panel_runtime.py', 'product_writer.py', 'live_voice.py')
+                 'voice_worker.py', 'tiktok_live.py', 'tiktok_video.py', 'tiktok_video_worker.py', 'droidcam_output.py', 'panel_runtime.py', 'product_writer.py', 'live_voice.py')
 
 
 def runtime_identity(resources, owner, executable=None):
@@ -26,7 +26,7 @@ def runtime_identity(resources, owner, executable=None):
             'root': os.path.normcase(os.path.realpath(owner)), 'voiceApi': 1, 'appVersion': APP_VERSION}
 
 
-def find_running_backend(first_port, expected, count=8):
+def find_running_backend(first_port, expected, count=32):
     for port in range(first_port, first_port + count):
         connection = http.client.HTTPConnection('127.0.0.1', port, timeout=.75)
         try:

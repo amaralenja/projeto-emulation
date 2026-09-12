@@ -21,3 +21,25 @@ def priority(targets, usage, lifetime):
     ordered = sorted(targets, key=lambda n: (usage(n), lifetime(n), n))
     skipped = [n for n in ordered if 7200 - usage(n) < 90]
     return {n: targets[n] for n in ordered if n not in skipped}, skipped
+
+
+def daily_task_rows(history, phone_names, day):
+    """Keep known tasks visible at zero on a new day; limits are per phone."""
+    names = {}
+    for phones in history.get('dias', {}).values():
+        for phone in phone_names:
+            for key, entry in phones.get(phone, {}).items():
+                name = entry.get('nome') or key
+                names.setdefault(task_key(name), name)
+    rows = []
+    for name in names.values():
+        phones = []
+        for phone in phone_names:
+            seconds = task_usage(history, phone, name, day)
+            remaining = max(0, 7200 - seconds)
+            phones.append(dict(name=phone, seconds=seconds, limit=7200,
+                               remainingSeconds=remaining, available=remaining >= 90))
+        rows.append(dict(name=name, seconds=sum(p['seconds'] for p in phones),
+                         limit=7200 * len(phones), phones=phones,
+                         completedPhones=sum(not p['available'] for p in phones)))
+    return sorted(rows, key=lambda row: (-row['seconds'], row['name']))

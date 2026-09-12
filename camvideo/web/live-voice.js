@@ -16,6 +16,76 @@
     <p id="live-status" class="tiktok-note" role="status"></p><p id="live-counts" class="tiktok-note"></p>
     <details class="voice-help"><summary>Último roteiro gerado</summary><p id="live-script" style="white-space:pre-wrap"></p></details></div>`;
   $('view-tiktok').querySelector('.voice-studio').prepend(panel);
+  const demo = document.createElement('article');
+  demo.className = 'panel'; demo.style.marginBottom = '20px';
+  demo.innerHTML = `<div class="panel-heading"><div><span class="eyebrow">SIMULAÇÃO · NOMES FICTÍCIOS</span><h2>Teste do sininho de venda</h2></div></div><p class="tiktok-note">Prévia com sininho e agradecimento. A própria voz anuncia que é uma simulação. Clique para gerar e depois ouça no player.</p><button id="sale-demo-generate" class="button button-secondary">Gerar simulação de venda</button><p id="sale-demo-status" class="tiktok-note" role="status">Nenhuma simulação gerada.</p><audio id="sale-demo-audio" controls hidden aria-label="Ouvir simulação de venda"></audio>`;
+  panel.after(demo);
+  const stockCard = document.createElement('article');
+  stockCard.className = 'panel'; stockCard.style.marginBottom = '20px';
+  stockCard.innerHTML = `<div class="panel-heading"><div><span class="eyebrow">OFERTA · QUANTIDADE REAL</span><h2>Unidades no valor promocional</h2></div></div><p class="tiktok-note">Informe quantas unidades do produto acima ainda têm o valor promocional. A quantidade entra nos roteiros da amostra e das falas contínuas. Atualize manualmente conforme as vendas; não há baixa automática.</p><form id="stock-form" class="tiktok-form"><label for="stock-remaining">Unidades restantes</label><input id="stock-remaining" type="number" min="0" max="1000000" step="1" required placeholder="Ex.: 12"><div class="tiktok-actions"><button class="button button-primary">Atualizar quantidade nos áudios</button><button id="stock-disable" type="button" class="button button-secondary">Não mencionar estoque</button></div></form><p id="stock-status" class="tiktok-note" role="status"></p><p id="stock-current" class="tiktok-note"></p><p class="tiktok-note">A atualização interrompe a reprodução e renova as falas pendentes; pode haver uma pausa. Zero encerra a sessão. A configuração vale para o nome de produto informado e é reiniciada ao fechar o servidor. Áudios já salvos na biblioteca não são reescritos.</p>`;
+  panel.after(stockCard);
+  async function saveStock(remaining) {
+    try {
+      await act('stock_update', {product:$('live-name').value.trim(), remaining});
+      $('stock-status').textContent = remaining === null ? 'Menção ao estoque desativada.' : remaining === 0 ? 'Estoque zerado. A sessão foi interrompida; atualize antes de reiniciar.' : 'Quantidade atualizada. Os próximos roteiros usarão esse estoque.';
+    } catch(error) { $('stock-status').textContent = error.message; }
+  }
+  $('stock-form').onsubmit = e => {e.preventDefault(); saveStock(Number($('stock-remaining').value));};
+  $('stock-disable').onclick = () => saveStock(null);
+  let stockLoaded = false;
+  window.addEventListener('voice-state', e => {
+    const value = e.detail.live?.stock;
+    if (!value) return;
+    if (!stockLoaded) {stockLoaded=true; $('stock-remaining').value=value.remaining ?? '';}
+    $('stock-current').textContent = value.remaining === null ? 'Sem menção de quantidade nos roteiros.' : `${value.product}: ${value.remaining} unidade(s) no valor promocional.`;
+  });
+  const sales = document.createElement('article');
+  sales.className = 'panel'; sales.style.marginBottom = '20px';
+  sales.innerHTML = `<div class="panel-heading"><div><span class="eyebrow">🔔 VENDAS CONFIRMADAS</span><h2>Sininho e agradecimentos</h2></div></div><p class="tiktok-note">Durante as falas contínuas, registre cada compra concluída. O painel sorteia a espera e anuncia a venda entre as falas, com sininho e agradecimento ao nome real informado. Sem pedidos na fila, nenhum aviso é criado.</p><form id="sales-timing-form" class="tiktok-form"><label for="sales-min">Intervalo mínimo (segundos)</label><input id="sales-min" type="number" min="10" max="3600" value="30" required><label for="sales-max">Intervalo máximo (segundos)</label><input id="sales-max" type="number" min="10" max="3600" value="90" required><button class="button button-secondary">Salvar intervalos</button></form><form id="sales-order-form" class="tiktok-form" style="margin-top:16px"><label for="sales-order">Pedidos e nomes reais — um por linha</label><textarea id="sales-order" rows="6" maxlength="7000" required placeholder="PED-1042; Ana&#10;PED-1043; Gabriel&#10;PED-1044; Mariana"></textarea><p class="tiktok-note">Formato: código do pedido; nome real do comprador para o agradecimento. Use somente o nome que pode ser anunciado na live. Envie até 50 linhas por vez e acrescente mais lotes durante a reprodução; até 1000 pendentes.</p><label><input id="sales-confirmed" type="checkbox" required> Confirmo que todas estas compras foram concluídas</label><button id="sales-add" class="button button-primary">Adicionar vendas à fila</button></form><p id="sales-status" class="tiktok-note" role="status"></p><p id="sales-counts" class="tiktok-note"></p><p class="tiktok-note">A espera pode aumentar enquanto uma fala termina. Parar a sessão cancela os avisos pendentes. Pedidos são lembrados apenas nesta execução; não registre novamente uma venda já anunciada.</p>`;
+  demo.before(sales);
+  $('sales-timing-form').onsubmit = async e => {
+    e.preventDefault();
+    try { await act('sales_config', {minimum:Number($('sales-min').value), maximum:Number($('sales-max').value)}); $('sales-status').textContent = 'Intervalos salvos para os próximos sorteios.'; }
+    catch(error) { $('sales-status').textContent = error.message; }
+  };
+  let saleSubmitting = false, salesLoaded = false;
+  $('sales-order-form').onsubmit = async e => {
+    e.preventDefault(); saleSubmitting = true; $('sales-add').disabled = true;
+    try {
+      const entries = $('sales-order').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => { const separator=line.indexOf(';'); return separator < 0 ? {order:line, name:''} : {order:line.slice(0,separator).trim(), name:line.slice(separator+1).trim()}; });
+      const registered = await act('sales_add_batch', {entries, confirmed:$('sales-confirmed').checked});
+      $('sales-order-form').reset(); $('sales-status').textContent = `${registered.added} vendas adicionadas à fila. Nomes: ${registered.names.join(", ")}. Você pode adicionar outro lote.`;
+    } catch(error) { $('sales-status').textContent = error.message; }
+    finally { saleSubmitting = false; }
+  };
+  window.addEventListener('voice-state', e => {
+    const state = e.detail.live, values = state?.sales;
+    $('sales-add').disabled = saleSubmitting || !state?.active || !state?.continuous;
+    if (!values) return;
+    if (!salesLoaded) { salesLoaded=true; $('sales-min').value=values.minimum; $('sales-max').value=values.maximum; }
+    $('sales-counts').textContent = `${values.queued} pedidos aguardando preparação · ${values.announced} agradecimentos concluídos` + (state.active && state.continuous ? '' : ' · Inicie as falas contínuas para registrar vendas.');
+  });
+  let demoId = null, demoSubmitting = false;
+  $('sale-demo-generate').onclick = async () => {
+    demoSubmitting = true; $('sale-demo-generate').disabled = true;
+    $('sale-demo-status').textContent = 'Gerando sininho e voz de demonstração...';
+    $('sale-demo-audio').hidden = true;
+    try { demoId = (await act('sale_demo')).id; }
+    catch (error) { $('sale-demo-status').textContent = error.message; }
+    finally { demoSubmitting = false; }
+  };
+  window.addEventListener('voice-state', e => {
+    $('sale-demo-generate').disabled = demoSubmitting || e.detail.generation.busy || !!e.detail.live?.active;
+    if (!demoId) return;
+    const clip = e.detail.clips.find(item => item.id === demoId);
+    if (clip) {
+      $('sale-demo-audio').src = clip.url; $('sale-demo-audio').hidden = false;
+      $('sale-demo-status').textContent = 'Simulação pronta. Aperte reproduzir para ouvir o sininho e o agradecimento fictício.';
+      demoId = null;
+    } else if (!e.detail.generation.busy) {
+      $('sale-demo-status').textContent = e.detail.generation.message; demoId = null;
+    }
+  });
   let loaded = false;
   const product = () => ({name:$('live-name').value.trim(), features:$('live-features').value.trim(), offer:$('live-offer').value.trim()});
   async function act(action, data={}) {
@@ -51,14 +121,15 @@
     $('live-unload').disabled=value.active || e.detail.generation.busy || e.detail.playback.busy;
     $('live-status').textContent=value.message;
     $('live-status').classList.toggle('voice-error',!!value.error);
-    $('live-counts').textContent=`${value.generated} falas geradas · ${value.queued} na fila · ${value.played} reproduzidas · ${value.requests} chamadas OpenAI · ${value.tokens} tokens`;
+    $('live-counts').textContent=`${value.generated} falas geradas · ${value.queued} na fila · ${value.played} reproduzidas · ${value.requests} chamadas OpenAI · ${value.tokens} tokens · ${e.detail.engineLoaded ? 'Motor de voz em memória' : 'Motor de voz descarregado'}`;
     $('live-script').textContent=value.script || 'Nenhum roteiro ainda.';
   });
 
   const uploads=document.createElement('article'); uploads.className='panel'; uploads.style.marginBottom='20px';
-  uploads.innerHTML=`<div class="panel-heading"><div><span class="eyebrow">VÍDEOS DA LIVE</span><h2>Adicionar demonstrações do produto</h2></div></div><p class="tiktok-note">Envie seus vídeos para a biblioteca e selecione um no rascunho. O envio não altera a câmera nem inicia uma transmissão. Use demonstrações e ângulos diferentes; edições não garantem que o TikTok considere o conteúdo original.</p><div class="tiktok-actions"><label class="button button-secondary" for="live-video-upload">Enviar vídeos</label><input type="file" id="live-video-upload" accept="video/*" multiple hidden><button class="button button-secondary" id="live-upload-cancel" disabled>Cancelar envio</button></div><progress id="live-upload-progress" max="100" value="0" style="width:100%;margin-top:14px"></progress><p class="tiktok-note" id="live-upload-status" role="status">Nenhum envio em andamento.</p>`;
+  uploads.innerHTML=`<div class="panel-heading"><div><span class="eyebrow">VÍDEOS DA LIVE</span><h2>Adicionar demonstrações do produto</h2></div></div><p class="tiktok-note">Envie seus vídeos para a biblioteca e selecione um no rascunho. O envio não altera a câmera nem inicia uma transmissão. Use demonstrações e ângulos diferentes; edições não garantem que o TikTok considere o conteúdo original.</p><div class="tiktok-actions"><button class="button button-secondary" id="live-upload-open">Enviar vídeos</button><input type="file" id="live-video-upload" accept="video/*" multiple hidden><button class="button button-secondary" id="live-upload-cancel" disabled>Cancelar envio</button></div><progress id="live-upload-progress" max="100" value="0" style="width:100%;margin-top:14px"></progress><p class="tiktok-note" id="live-upload-status" role="status">Nenhum envio em andamento.</p>`;
   $('view-tiktok').querySelector('#tiktok-draft').closest('article').before(uploads);
   let xhr=null, cancelled=false;
+  $('live-upload-open').onclick=()=>$('live-video-upload').click();
   $('live-upload-cancel').onclick=()=>{cancelled=true; xhr?.abort();};
   $('live-video-upload').onchange=async e=>{
     const files=Array.from(e.target.files); cancelled=false;

@@ -105,8 +105,8 @@
     await actVoice('generate', {text:text.value.trim(), style:$('voice-style').value, steps:Number($('voice-quality').value)});
   });
   $('voice-outputs').onclick = () => actVoice('outputs');
-  $('voice-cancel').onclick = () => actVoice('cancel_generation');
-  $('voice-stop').onclick = () => actVoice('stop');
+  $('voice-cancel').onclick = () => actVoice(state?.live?.active ? 'live_stop' : 'cancel_generation');
+  $('voice-stop').onclick = () => actVoice(state?.live?.active ? 'live_stop' : 'stop');
   $('voice-volume').oninput = () => { $('voice-volume-label').textContent = $('voice-volume').value + '%'; };
   output.onchange = () => { outputKey = output.value; localStorage.setItem('emulation-voice-output', outputKey); route(); };
   $('voice-clips').addEventListener('click', async event => {
