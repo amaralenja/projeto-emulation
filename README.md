@@ -1,5 +1,30 @@
 # Projeto Emulation
 
+## Versão atual: 2.3.33 — operação dos celulares
+
+**Leia primeiro o [padrão dos celulares e checklist de gravação](docs/padrao-celulares.md).**
+O guia explica a preparação de cada aparelho, como iniciar pelo painel,
+como conferir o salvamento e quais falhas o supervisor consegue recuperar.
+É uma referência do funcionamento deste projeto, não uma certificação do Minute
+nem garantia de aprovação de conteúdo pelo serviço.
+
+Novidades desta atualização:
+
+- Plano diário: limite separado de 2 horas por tarefa, celular e dia local; espera pelo próximo dia ao completar o plano.
+- Plano intercalado: catálogo importado do Minute, seleção de tarefas e vínculo de um vídeo por tarefa; sorteia a ordem em ciclos e troca depois de salvar a rodada.
+- Rodadas com dois celulares, priorizando os que menos gravaram; o modo fixo tenta abrir o par mesmo com pouca RAM disponível.
+- Supervisor local: registro persistente das capturas, tentativa de recuperação, confirmação de salvamento e proteção contra contagem duplicada; processo auxiliar para reiniciar o servidor quando necessário.
+- Visão geral com filtros de período e estimativa de ganhos em reais.
+
+Abra pelo iniciador do projeto e use a versão atual indicada no painel. A porta
+local pode mudar quando já existe outro servidor aberto; não fixe uma porta antiga.
+O endereço publicado está em `camvideo/web/current-runtime.json`, arquivo local
+que não acompanha o GitHub. Inicie as gravações pelo botão do painel.
+
+As seções antigas abaixo registram etapas anteriores do projeto. Valores históricos
+de resolução, espaço e limites não substituem o guia operacional acima.
+
+
 ## Câmera compartilhada e automação
 
 O painel agora prepara os quadros uma vez no PC e conecta essa mesma fonte

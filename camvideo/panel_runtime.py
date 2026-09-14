@@ -5,16 +5,16 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = '2.3.20'
+APP_VERSION = '2.3.33'
 
-BACKEND_FILES = ('background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
+BACKEND_FILES = ('daily_plan.py', 'background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
                  'shared_camera.py', 'mirror.py', 'storage.py', 'voice_manager.py',
                  'voice_worker.py', 'tiktok_live.py', 'tiktok_video.py', 'tiktok_video_worker.py', 'droidcam_output.py', 'panel_runtime.py', 'product_writer.py', 'live_voice.py')
 
 
 def runtime_identity(resources, owner, executable=None):
     digest = hashlib.sha256()
-    for name in BACKEND_FILES:
+    for name in BACKEND_FILES + ('interleaved_plan.py', 'minute_catalog.py', 'loop_supervisor.py', 'panel_watchdog.py'):
         path = Path(resources) / name
         if path.is_file():
             digest.update(name.encode())

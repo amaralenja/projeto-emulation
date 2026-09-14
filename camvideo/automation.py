@@ -75,6 +75,7 @@ class Automation:
         self.rows = {}
         self.stop_after_round = threading.Event()
         self.usage_since = None
+        self.recovery = None
 
     def task_usage(self, phone, task):
         if not self.usage_since:
@@ -199,9 +200,11 @@ class Automation:
                 visible = re.search(r'(?:mInputShown|isInputViewShown)=(true|false)\b', result.stdout)
                 if result.returncode == 0 and visible:
                     if visible[1] == 'true':
-                        # Submit search; BACK can leave the app with stale IME state.
-                        self.e._adb(serial, 'shell', 'input', 'keyevent', '66', timeout=8, check=True)
-                    return
+                        # ENTER does not dismiss Gboard's clipboard panel. BACK
+                        # closes the visible IME; verify it before tapping cards.
+                        self.e._adb(serial, 'shell', 'input', 'keyevent', '4', timeout=8, check=True)
+                    else:
+                        return
             except subprocess.TimeoutExpired:
                 pass
             if attempt < 2:
@@ -233,6 +236,7 @@ class Automation:
         left_camera = False
         reopened = False
         system_waits = 0
+        anr_restarted = False
         tips_dismissed = False
         for _ in range(10):
             self.check_cancel()
@@ -259,8 +263,22 @@ class Automation:
                 raise RuntimeError('Há uma gravação na tela de revisão; salve ou descarte antes de iniciar outra')
             system_wait = next((n for n in nodes if n.get('resource-id') == 'android:id/aerr_wait' and self.visible(n)), None)
             if system_wait is not None:
-                if system_waits >= 2:
-                    raise RuntimeError('O Android continua sem responder após duas tentativas de aguardar; confira o celular')
+                if anr_restarted:
+                    raise RuntimeError('O Minute continua sem responder após aguardar e reabrir o app; confira o celular')
+                if system_waits:
+                    # Only restart a confirmed task-list ANR during preparation.
+                    # Unknown screens and pending capture/review must survive.
+                    safe_list = any(n.get('resource-id') in {'nav-index', 'home-search-input', 'home-tasks'}
+                                    and self.visible(n) for n in nodes)
+                    if not safe_list or self.e._camera_pronta(serial) is not None:
+                        raise RuntimeError('Minute sem responder em tela não segura para reabrir; captura preservada')
+                    self.mark(serial, stage='Reabrindo o Minute após travamento')
+                    self.e._adb(serial, 'shell', 'am', 'force-stop', 'com.bakerdata.minute', timeout=15, check=True)
+                    self.check_cancel()
+                    self.launch_minute(serial)
+                    anr_restarted = True
+                    self.wait_minute_ready(serial)
+                    continue
                 self.mark(serial, stage='Android sem responder — aguardando recuperação')
                 self.tap(serial, system_wait)
                 system_waits += 1
@@ -336,6 +354,7 @@ class Automation:
             nodes = list(self.xml(serial).iter('node'))
             actual = next((n for n in nodes if n.get('resource-id') == 'home-search-input'), None)
             if actual is not None and exact_text(search_text(actual)) == exact_text(query):
+                self.hide_keyboard(serial)
                 return
         raise RuntimeError('O campo de busca não confirmou o texto digitado; nenhuma tarefa foi iniciada')
 
@@ -515,7 +534,7 @@ class Automation:
                     durations[s] = min(durations[s], remaining)
                 self.mark(s, stage='Pronto', total=durations[s], error='')
             except Exception as exc:
-                transient = re.search(r"device\s+['\"]?[^\n]*not found|device offline|device still authorizing|no devices/emulators found", str(exc), re.I)
+                transient = re.search(r"device\s+['\"]?[^\n]*not found|device offline|device still authorizing|no devices/emulators found|ADB n[aã]o respondeu|timed out", str(exc), re.I)
                 # Only retry preparation: no recording button has been pressed.
                 # Never replay commands during capture or saving.
                 if transient and 'unauthorized' not in str(exc).lower() and attempt < 2:
@@ -549,6 +568,8 @@ class Automation:
                 generation = self.e._ler_geracao(s)+1
                 self.e._escrever_controle(s, 'pause', generation)
                 before = self.e._pastas_gravacao(s)
+                if self.recovery:
+                    self.recovery.checkpoint(s,phone=name,task=task,day=self.e._hoje(),before=sorted(before),startedAt=time.time())
                 barrier.wait(timeout=90)
                 self.check_cancel()
                 self.mark(s, stage='Contagem do Minute')
@@ -556,11 +577,13 @@ class Automation:
                 triggered = True
                 self.e._tocar_botao_gravacao(s)
                 session = self.wait_recording(s, before, trigger_time)
+                if self.recovery:self.recovery.checkpoint(s,session=session)
                 capture_confirmed = True
                 task_id, actual = self.e._detectar_tarefa_sessao(s, session)
                 task_ids[s] = task_id
                 if auto and task_key(actual) != task_key(task):
                     raise RuntimeError('Tarefa aberta diferente da escolhida: '+actual)
+                if self.recovery and not auto:self.recovery.checkpoint(s,task=actual)
                 if self.task_usage(name, actual)+durations[s] > 7200:
                     raise RuntimeError('Limite diário insuficiente')
                 self.mark(s, task=actual, stage='Sincronizando o início')
@@ -618,7 +641,8 @@ class Automation:
                     if confirmed is None:
                         raise
                     recorded_seconds = min(recorded_seconds, confirmed)
-                self.e._somar_uso_tarefa(name, actual, recorded_seconds)
+                if self.recovery:self.recovery.credit(s,recorded_seconds)
+                else:self.e._somar_uso_tarefa(name, actual, recorded_seconds)
                 self.mark(s, stage='Salvo', percent=100, elapsed=elapsed)
             except Exception as exc:
                 barrier.abort()
@@ -661,13 +685,27 @@ class Automation:
         if pause_preview:
             # Minute autoplays the just-recorded preview. Its moving seek bar
             # prevents UIAutomator reaching idle; pause via the preview surface.
-            end_transition = time.monotonic()+90
+            end_transition = time.monotonic()+180
             while time.monotonic()<end_transition:
                 if self.e._camera_pronta(serial) is None:
                     break
+                # Android can retain EgoCameraPreview in the activity tree
+                # after capture ends. A visible review is stronger evidence.
+                try:
+                    review = self.xml(serial)
+                    if any(n.get('resource-id') in {'record-accept', 'minute-save'}
+                           or n.get('text') in {'Minute salvo.', 'Salvar este Minute?'}
+                           for n in review.iter('node')):
+                        break
+                except (subprocess.TimeoutExpired, RuntimeError, ET.ParseError):
+                    pass
                 time.sleep(.2)
             else:
-                raise RuntimeError('A tela de gravação não encerrou; confira o celular imediatamente')
+                # XML reads can outlast the deadline while the moving review
+                # prevents accessibility from becoming idle. Check native state
+                # again: it may have closed during that last blocking read.
+                if self.e._camera_pronta(serial) is not None:
+                    raise RuntimeError('A tela de gravação não encerrou; confira o celular imediatamente')
             time.sleep(.5)
         end = time.monotonic()+45
         clicked = False

@@ -61,7 +61,9 @@ def additional_capacity(available):
 
 def run_queue(automation, targets, prepare, installed, task, auto, repeat,
               online, boot, shutdown, available=memory_available, usage=lambda n: 0, lifetime=lambda n: 0,
-              randomize=False, resume_phones=()):
+              randomize=False, resume_phones=(), simultaneous=None, reset_controls=True):
+    if simultaneous not in (None, 2):
+        raise ValueError('Quantidade simultânea inválida')
     if not targets:
         raise ValueError('Nenhum celular participante.')
     if auto and not task.strip():
@@ -74,8 +76,9 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
         raise ValueError('Use o mesmo vídeo em todos os participantes na aba Vídeos antes de iniciar.')
     if records and len({r['assetId'] for r in records}) != 1:
         raise ValueError('Os participantes têm vídeos diferentes. Use “Usar em todos”.')
-    automation.e.cancelar_sync.clear()
-    automation.stop_after_round.clear()
+    if reset_controls:
+        automation.e.cancelar_sync.clear()
+        automation.stop_after_round.clear()
     update = automation.update
     update(queueActive=True, queueSaved=[], queuePending=list(targets), loopActive=repeat,
            loopStopping=False, loopCompleted=0, loopCycle=0, queueBatch=0)
@@ -108,8 +111,14 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
                 update(queuePending=list(pending), queueSkipped=skipped)
                 if not pending:
                     break
+                if simultaneous == 2 and repeat and len(pending) == 1:
+                    eligible, _ = priority(targets, usage, lifetime)
+                    for name, pair in eligible.items():
+                        if name not in pending:
+                            pending[name] = pair
+                            break
                 live = {n for n, pair in targets.items() if online(pair[0])}
-                slots = min(3, max(1, len(live) + additional_capacity(available())))
+                slots = simultaneous or min(3, max(1, len(live) + additional_capacity(available())))
                 chosen = dict(list(pending.items())[:slots])
                 # Higher-usage phones must not occupy the slots of lower-usage ones.
                 # The backend refuses shutdown if a camera or review is open.
@@ -122,7 +131,7 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
                 for name, (serial, port) in chosen.items():
                     if name in batch:
                         continue
-                    if allowance <= 0 or additional_capacity(available()) <= 0:
+                    if not simultaneous and (allowance <= 0 or additional_capacity(available()) <= 0):
                         break
                     automation.check_cancel()
                     update(message='Ligando '+name+'; conferindo RAM...', queueFreeGiB=available()/GIB)
@@ -131,7 +140,7 @@ def run_queue(automation, targets, prepare, installed, task, auto, repeat,
                     allowance -= 1
                 if not batch:
                     raise RuntimeError('RAM insuficiente para a próxima rodada. Feche aplicativos e tente novamente; os resultados salvos permanecem no histórico.')
-                if available() < GIB:
+                if not simultaneous and available() < GIB:
                     raise RuntimeError('Menos de 1 GiB de RAM livre após iniciar. Feche aplicativos antes de gravar.')
                 batch_number += 1
                 update(queueBatch=batch_number, queueCurrent=list(batch), queueFreeGiB=available()/GIB,

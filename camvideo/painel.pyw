@@ -517,7 +517,7 @@ class Painel:
     def _adb(serial, *args, timeout=12, check=False):
         r = subprocess.run(
             [ADB, "-s", serial, *args], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout, **sem_console())
+            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", timeout=timeout, **sem_console())
         if check and r.returncode != 0:
             detalhe = (r.stderr or r.stdout or "ADB nao respondeu").strip()
             raise RuntimeError(detalhe)

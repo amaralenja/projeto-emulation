@@ -9,6 +9,10 @@ from background_video import BackgroundVideo
 from automation import Automation
 from automation_queue import run_queue, capacity_snapshot, wait_for_shutdown
 from task_history import task_usage, daily_task_rows
+from daily_plan import DAILY_PLAN, run_daily_plan, continuous_daily_plan
+from interleaved_plan import validate_plan, run_interleaved_plan
+from minute_catalog import read_catalog, collect_catalog
+from loop_supervisor import LoopSupervisor
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
@@ -36,6 +40,8 @@ with open(LIBRARY_CONFIG,"w",encoding="utf-8") as f:json.dump({"path":VIDEOS},f)
 P=SourceFileLoader("engine",os.path.join(RES,"painel.pyw")).load_module()
 E=object.__new__(P.Painel); E.cancelar_sync=threading.Event(); E.lock_historico=threading.Lock()
 LOCK=threading.Lock(); S={"busy":False,"message":"Sistema pronto.","level":"ok","progress":0,"elapsed":0,"total":0,"task":""}
+LAST_PROGRESS=time.time()
+WATCHDOG=None
 PREPARATION_LOCK=threading.Lock(); UPLOAD_LOCK=threading.Lock()
 META_CACHE={}; PROXY_JOBS=set(); PROXY_LOCK=threading.Lock()
 PHONE_NAMES=os.path.join(AREA,"phone-names.json")
@@ -62,10 +68,47 @@ MIRROR=TouchMirror(P.ADB,hidden)
 TRANSFERS=Transfers(P.ADB,AREA,hidden)
 SHARED=SharedCamera(AREA,os.path.dirname(os.path.dirname(P.ADB)),P.AVD_HOME,TRANSFERS,RES)
 def update(**kw):
-    with LOCK:S.update(kw)
+    global LAST_PROGRESS
+    with LOCK:
+        if any(S.get(k)!=v for k,v in kw.items()):LAST_PROGRESS=time.time()
+        S.update(kw)
+        if S.get('planActive'):S['busy']=True
 def snap():
-    with LOCK:return dict(S,backendPid=os.getpid(),backendVersion=5)
+    with LOCK:return dict(S,backendPid=os.getpid(),backendVersion=5,
+                         supervisorVersion=1,interleavedPlanVersion=1,minuteCatalog=read_catalog(os.path.join(AREA,'minute-catalog.json')))
 AUTOMATION=Automation(E,update)
+SUPERVISOR=LoopSupervisor(AREA,P.HISTORICO_TAREFAS,E,AUTOMATION,update)
+
+
+def supervised_sync(options):
+    global WATCHDOG
+    E.cancelar_sync.clear();AUTOMATION.stop_after_round.clear()
+    SUPERVISOR.begin(options,f'http://127.0.0.1:{PORT}/')
+    AUTOMATION.recovery=SUPERVISOR
+    def ensure_online(serial):
+        if status(serial)=='online':return
+        match=next(((n,p) for n,(s,p) in devices().items() if s==serial),None)
+        if match is None:raise RuntimeError('Celular pendente não está cadastrado: '+serial)
+        start_phone(match[0],serial,match[1])
+        if not wait_open(serial,time.monotonic()+360):raise RuntimeError('Aguardando o celular pendente reiniciar: '+serial)
+    SUPERVISOR.ensure_online=ensure_online
+    if not FROZEN and (WATCHDOG is None or WATCHDOG.poll() is not None):
+        WATCHDOG=subprocess.Popen([sys.executable,os.path.join(RES,'panel_watchdog.py'),SUPERVISOR.path,str(os.getpid()),
+                                  os.path.join(RES,'modern_server.pyw')],**hidden())
+    def reset_idle():
+        for n,(serial,_) in devices().items():
+            AUTOMATION.check_cancel()
+            if status(serial)!='online' or E._camera_pronta(serial) is not None:continue
+            nodes=list(AUTOMATION.xml(serial).iter('node'))
+            if any(x.get('resource-id') in {'record-accept','minute-save'} for x in nodes):continue
+            if any(x.get('resource-id') in {'nav-index','home-search-input','nav-minutes'} for x in nodes):
+                E._adb(serial,'shell','am','force-stop','com.bakerdata.minute',timeout=15,check=True)
+                E._adb(serial,'emu','kill',timeout=10,check=True)
+                wait_for_shutdown(serial,E._adb,update)
+    try:SUPERVISOR.run(lambda:sync(options),reset_idle)
+    finally:
+        AUTOMATION.recovery=None
+        update(planActive=False,busy=False,queueActive=False,loopActive=False,supervisorStage='Parado')
 
 def devices(): return P.descobrir_celulares() or {"MinutePlay":("emulator-5554","5554")}
 VOICE=VoiceManager(AREA,RES,hidden)
@@ -86,7 +129,7 @@ def status(serial):
 def analytics(phone_names):
     with E.lock_historico:data=E._ler_historico()
     days=data.get("dias",{}) if isinstance(data,dict) else {}
-    today=time.strftime("%Y-%m-%d"); by_task={}; by_phone={}; total_all=0.0
+    today=time.strftime("%Y-%m-%d"); by_task={}; by_phone={}; total_all=0.0; history_rows=[]
     for day,phones in days.items():
         if not isinstance(phones,dict):continue
         for phone,tasks in phones.items():
@@ -94,6 +137,7 @@ def analytics(phone_names):
             for entry in tasks.values():
                 if not isinstance(entry,dict):continue
                 seconds=max(0.0,float(entry.get("segundos",0) or 0));total_all+=seconds
+                history_rows.append(dict(day=day,phone=phone,task=str(entry.get("nome") or "Tarefa sem nome"),seconds=seconds))
                 if day==today:
                     name=str(entry.get("nome") or "Tarefa sem nome")
                     by_task[name]=by_task.get(name,0)+seconds;by_phone[phone]=by_phone.get(phone,0)+seconds
@@ -106,7 +150,7 @@ def analytics(phone_names):
         recent.append({"date":day,"seconds":value})
     phone_rows=[{"name":name,"seconds":by_phone.get(name,0)} for name in phone_names]
     task_rows=daily_task_rows(data, phone_names, today)
-    return {"day":today,"todaySeconds":sum(by_task.values()),"totalSeconds":total_all,"activeTasks":sum(row["seconds"]>0 for row in task_rows),"limitSeconds":P.LIMITE_TAREFA_SEGUNDOS,"byTask":task_rows,"byPhone":phone_rows,"last7Days":recent}
+    return {"day":today,"historyRows":history_rows,"todaySeconds":sum(by_task.values()),"totalSeconds":total_all,"activeTasks":sum(row["seconds"]>0 for row in task_rows),"limitSeconds":P.LIMITE_TAREFA_SEGUNDOS,"byTask":task_rows,"byPhone":phone_rows,"last7Days":recent}
 
 def video_meta(path):
     st=os.stat(path);key=(path,st.st_mtime_ns,st.st_size)
@@ -148,7 +192,7 @@ def panel_statuses():
     global STATUS_CACHE,STATUS_AT
     if time.monotonic()-STATUS_AT<5 or not STATUS_LOCK.acquire(blocking=False):return dict(STATUS_CACHE)
     try:
-        r=subprocess.run([P.ADB,"devices"],capture_output=True,text=True,timeout=5,**hidden())
+        r=subprocess.run([P.ADB,"devices"],stdin=subprocess.DEVNULL,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=5,**hidden())
         if r.returncode==0:
             STATUS_CACHE={parts[0]:("online" if parts[1]=="device" else "booting") for line in r.stdout.splitlines()[1:] if len(parts:=line.split())==2}
         STATUS_AT=time.monotonic()
@@ -179,7 +223,7 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if (installed.get(p["serial"],{}).get("confirmed") or installed.get(p["serial"],{}).get("staged")) else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=2,dailyPlanVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p):
     if status(s)!="off":return
@@ -375,6 +419,13 @@ def add_phone():
     update(busy=False,progress=100,message=n+" criado sem login no Minute.",level="ok")
 def sync(options=None):
     options=options or {}
+    interleaved = validate_plan(options.get('interleavedTasks')) if options.get('interleavedPlan') else None
+    if interleaved:
+        catalog = read_catalog(os.path.join(AREA,'minute-catalog.json')).get('tasks',[])
+        if any(row['task'] not in catalog for row in interleaved):
+            raise ValueError('Selecione as tarefas no catálogo do Minute; atualize o catálogo se necessário.')
+    if options.get('dailyPlan') or interleaved:
+        options=dict(options, scope='all', autoNavigate=True, manageRam=True, repeat=True, simultaneous=2, usageSince=None)
     since=options.get('usageSince')
     if since:
         from datetime import date
@@ -413,13 +464,65 @@ def sync(options=None):
             E._adb(s,'emu','kill',timeout=8,check=True)
             update(message='Aguardando '+s+' desligar após salvar...')
             wait_for_shutdown(s, E._adb, update)
+        if options.get('dailyPlan') or interleaved:
+            AUTOMATION.usage_since=None
+            E.cancelar_sync.clear()
+            AUTOMATION.stop_after_round.clear()
+            update(planActive=True, planCompleted=False, planStep=0, planMode='interleaved' if interleaved else 'daily')
+            caches={}
+            def preflight(video):
+                if video != os.path.basename(video) or not os.path.isfile(os.path.join(VIDEOS,video)):
+                    raise ValueError('Vídeo não encontrado na biblioteca: '+video)
+                cache=prepared_cache(os.path.join(VIDEOS,video),False)
+                if not cache:
+                    raise RuntimeError('Prepare em segundo plano na aba Vídeos antes de iniciar o plano: '+video)
+                caches[video]=cache
+            def activate(eligible,video):
+                AUTOMATION.check_cancel()
+                for n,(s,p) in targets.items():
+                    if n not in eligible and status(s)=='online':
+                        AUTOMATION.check_cancel()
+                        shutdown(s)
+                expected=caches[video]['sha256']+':False'
+                installed=TRANSFERS.snapshot()['installedVideos']
+                if any(installed.get(s,{}).get('assetId')!=expected for s,_ in eligible.values()):
+                    # Stage offline to avoid restarting several guests simultaneously.
+                    for n,(s,p) in targets.items():
+                        AUTOMATION.check_cancel()
+                        if status(s)=='online':shutdown(s)
+                    AUTOMATION.check_cancel()
+                    install_targets([(n,s) for n,(s,p) in eligible.items()],video,False)
+                current=TRANSFERS.snapshot()['installedVideos']
+                if any(current.get(s,{}).get('assetId')!=expected for s,_ in eligible.values()):
+                    raise RuntimeError('O vídeo correto não foi confirmado para '+video)
+            def run_task(eligible,task):
+                run_queue(AUTOMATION,eligible,prepare,TRANSFERS.snapshot()['installedVideos'],task,True,not bool(interleaved),
+                          lambda s:status(s)=='online',boot,shutdown,
+                          usage=lambda n:AUTOMATION.task_usage(n,task),
+                          lifetime=lambda n:task_usage(E._ler_historico(),n,task),
+                          simultaneous=2,reset_controls=False)
+            try:
+                if interleaved:
+                    return continuous_daily_plan(
+                        lambda: run_interleaved_plan(interleaved,targets,AUTOMATION.task_usage,preflight,activate,run_task,
+                                                     AUTOMATION.check_cancel,AUTOMATION.stop_after_round.is_set,update),
+                        AUTOMATION.check_cancel,AUTOMATION.stop_after_round.is_set,E.cancelar_sync.wait,E._hoje,update,
+                        retry_preparation=AUTOMATION.recovery is None)
+                return continuous_daily_plan(
+                    lambda: run_daily_plan(targets,AUTOMATION.task_usage,preflight,activate,run_task,
+                                           AUTOMATION.check_cancel,AUTOMATION.stop_after_round.is_set,update),
+                    AUTOMATION.check_cancel,AUTOMATION.stop_after_round.is_set,
+                    E.cancelar_sync.wait,E._hoje,update,retry_preparation=AUTOMATION.recovery is None)
+            finally:
+                update(planActive=False,busy=False,queueActive=False,loopActive=False)
         return run_queue(AUTOMATION,targets,prepare,TRANSFERS.snapshot()['installedVideos'],
                          str(options.get('taskName','')),True,bool(options.get('repeat',False)),
                          lambda s:status(s)=='online',boot,shutdown,
                          usage=lambda n:AUTOMATION.task_usage(n,str(options.get('taskName',''))),
                          lifetime=lambda n:task_usage(E._ler_historico(),n,str(options.get('taskName',''))),
                          randomize=bool(options.get('randomizePhones',True)),
-                         resume_phones=options.get('resumePhones',()))
+                         resume_phones=options.get('resumePhones',()),
+                         simultaneous=options.get('simultaneous'))
     update(queueActive=False,queueBatch=0,queueSaved=[],queuePending=[])
     AUTOMATION.run(targets,prepare,TRANSFERS.snapshot()["installedVideos"],
                    str(options.get("taskName", "")),bool(options.get("autoNavigate",True)),
@@ -460,9 +563,19 @@ def action(d):
     elif a=="add":job(a,add_phone)
     elif a=="sync":
         if MIRROR.state()["active"]:raise ValueError("Pare o espelhamento antes da gravacao automatica")
-        job(a,lambda:sync(d))
-    elif a=="cancel":E.cancelar_sync.set()
-    elif a=="loop_stop_after_round":AUTOMATION.request_stop_after_round()
+        job(a,lambda:supervised_sync(d) if d.get('supervisor',True) else sync(d))
+    elif a=='minute_catalog':
+        if s not in by: raise ValueError('Selecione o celular para ler as tarefas.')
+        def scan():
+            E.cancelar_sync.clear()
+            n,p=by[s]
+            if status(s)!='online':
+                start_phone(n,s,p)
+                if not wait_open(s,time.monotonic()+360): raise RuntimeError('O celular não terminou de iniciar.')
+            collect_catalog(AUTOMATION,s,os.path.join(AREA,'minute-catalog.json'),update)
+        job(a,scan)
+    elif a=="cancel":SUPERVISOR.stop();E.cancelar_sync.set()
+    elif a=="loop_stop_after_round":SUPERVISOR.stop();AUTOMATION.request_stop_after_round()
     elif a=="adjust":
         if not snap()["task"]:raise RuntimeError("nenhuma tarefa detectada")
         E._definir_uso_tarefa(by[s][0],snap()["task"],int(d["minutes"])*60)
@@ -506,6 +619,9 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
         if path=="/api/version":return self.sendj(RUNTIME_ID)
+        if path=='/api/health':
+            with LOCK:health=dict(busy=S['busy'],lastProgress=LAST_PROGRESS,waiting=S.get('planWaitingNextDay',False))
+            return self.sendj(health)
         if path=="/api/state":return self.sendj(payload())
         if path=="/api/tiktok/state":return self.sendj(dict(TIKTOK_VIDEO.snapshot(),phones=TIKTOK_VIDEO.phones()))
         if path=="/api/voice/state":return self.sendj(dict(VOICE.snapshot(),live=LIVE_VOICE.snapshot()))
@@ -640,6 +756,10 @@ def main():
         break
     if server is None:raise RuntimeError("Não há uma porta local disponível para abrir o painel atualizado.")
     publish_runtime()
+    if '--supervisor-resume' in sys.argv:
+        saved=SUPERVISOR.state()
+        if saved.get('enabled') and saved.get('options'):
+            threading.Timer(1,lambda:job('sync',lambda:supervised_sync(saved['options']))).start()
     if "--no-open" not in sys.argv:threading.Timer(.5,open_ui).start()
     if "--abrir-tudo" in sys.argv:threading.Timer(1,lambda:job("all",open_all)).start()
     server.serve_forever()

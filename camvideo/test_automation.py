@@ -8,6 +8,30 @@ from automation import Automation, recording_duration, stop_deadline, normalize,
 
 
 class AutomationTests(unittest.TestCase):
+    def test_save_rechecks_camera_after_xml_read_exceeds_deadline(self):
+        e = self.engine(); a = Automation(e, Mock())
+        e._camera_pronta.side_effect = [1800, None]
+        a.xml = Mock(side_effect=[RuntimeError('UI never idle'),
+            ET.fromstring('<hierarchy><node resource-id="record-accept"/></hierarchy>'),
+            ET.fromstring('<hierarchy><node text="Minute salvo."/></hierarchy>')])
+        a.tap = Mock()
+        with patch('automation.time.monotonic', side_effect=[0, 1, 181, 182, 183, 184]), patch('automation.time.sleep'):
+            a.save('s')
+        a.tap.assert_called_once()
+        e._tocar_botao_gravacao.assert_not_called()
+
+    def test_save_visible_review_overrides_stale_camera(self):
+        e = self.engine(); a = Automation(e, Mock())
+        e._camera_pronta.return_value = 1800
+        review = ET.fromstring('<hierarchy><node resource-id="record-accept"/></hierarchy>')
+        a.xml = Mock(side_effect=[review, review,
+            ET.fromstring('<hierarchy><node text="Minute salvo."/></hierarchy>')])
+        a.tap = Mock()
+        with patch('automation.time.sleep'):
+            a.save('s')
+        a.tap.assert_called_once()
+        e._tocar_botao_gravacao.assert_not_called()
+
     def test_save_recovers_non_idle_preview_once_before_save(self):
         e = self.engine(); a = Automation(e, Mock())
         e._camera_pronta.return_value = None
@@ -106,11 +130,33 @@ class AutomationTests(unittest.TestCase):
         e = self.engine(); a = Automation(e, Mock())
         a.minute_foreground = Mock(return_value=True)
         a.visible = Mock(return_value=True); a.tap = Mock()
-        a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="android:id/aerr_wait"/></hierarchy>'))
-        with self.assertRaisesRegex(RuntimeError, 'duas tentativas'):
+        e._camera_pronta.return_value = None
+        a.launch_minute = Mock(); a.wait_minute_ready = Mock()
+        a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="android:id/aerr_wait"/><node resource-id="nav-index"/></hierarchy>'))
+        with self.assertRaisesRegex(RuntimeError, 'aguardar e reabrir'):
             a.task_list('s')
-        self.assertEqual(a.tap.call_count, 2)
+        self.assertEqual(a.tap.call_count, 1)
+        a.launch_minute.assert_called_once_with('s')
         e._tocar_botao_gravacao.assert_not_called()
+
+    def test_anr_restart_recovers_task_list(self):
+        e = self.engine(); a = Automation(e, Mock())
+        e._camera_pronta.return_value = None
+        a.minute_foreground = Mock(return_value=True); a.visible = Mock(return_value=True)
+        a.tap = Mock(); a.hide_keyboard = Mock(); a.launch_minute = Mock(); a.wait_minute_ready = Mock()
+        anr = ET.fromstring('<hierarchy><node resource-id="android:id/aerr_wait"/><node resource-id="nav-index"/></hierarchy>')
+        a.xml = Mock(side_effect=[anr, anr, ET.fromstring('<hierarchy><node resource-id="nav-index"/></hierarchy>')])
+        a.task_list('s')
+        e._adb.assert_called_once_with('s', 'shell', 'am', 'force-stop', 'com.bakerdata.minute', timeout=15, check=True)
+        a.launch_minute.assert_called_once_with('s')
+        a.hide_keyboard.assert_called_once_with('s')
+
+    def test_anr_unknown_screen_is_not_closed(self):
+        e = self.engine(); a = Automation(e, Mock())
+        a.minute_foreground = Mock(return_value=True); a.visible = Mock(return_value=True); a.tap = Mock()
+        a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="android:id/aerr_wait"/></hierarchy>'))
+        with self.assertRaisesRegex(RuntimeError, 'preservada'): a.task_list('s')
+        e._adb.assert_not_called()
 
     def test_launch_rejects_stderr_error_even_with_zero_exit_code(self):
         e = self.engine(); a = Automation(e, Mock())
@@ -345,9 +391,11 @@ class AutomationTests(unittest.TestCase):
         e._adb.return_value.stdout = 'mInputShown=false'
         a.hide_keyboard('s')
         self.assertEqual(e._adb.call_count, 1)
-        e._adb.return_value.stdout = 'mInputShown=true'
+        e._adb.side_effect = [Mock(returncode=0, stdout='mInputShown=true'),
+                              Mock(returncode=0, stdout=''),
+                              Mock(returncode=0, stdout='mInputShown=false')]
         a.hide_keyboard('s')
-        self.assertEqual(e._adb.call_args.args[-1], '66')
+        self.assertTrue(any(c.args[-2:] == ('keyevent', '4') for c in e._adb.call_args_list))
 
     def test_keyboard_ignores_client_dump_error_when_visibility_is_valid(self):
         e = self.engine(); a = Automation(e, Mock())
@@ -355,6 +403,14 @@ class AutomationTests(unittest.TestCase):
         a.hide_keyboard('s')
         self.assertEqual(e._adb.call_count, 1)
         self.assertIn('grep -m 1', e._adb.call_args.args[2])
+
+    def test_keyboard_still_visible_blocks_navigation(self):
+        e = self.engine(); a = Automation(e, Mock())
+        e._adb.return_value = Mock(returncode=0, stdout='mInputShown=true')
+        with self.assertRaises(RuntimeError):
+            a.hide_keyboard('s')
+        backs = [c for c in e._adb.call_args_list if c.args[-2:] == ('keyevent', '4')]
+        self.assertEqual(len(backs), 3)
 
     def test_keyboard_retries_unknown_state_and_keeps_error_short(self):
         e = self.engine(); a = Automation(e, Mock())
@@ -419,6 +475,7 @@ class AutomationTests(unittest.TestCase):
         a.xml = Mock(return_value=ET.fromstring('<hierarchy><node resource-id="home-search-input" text="lavar"/></hierarchy>'))
         with patch('automation.time.sleep'), patch('automation.write_query') as writer: a.set_query('s','lavar')
         writer.assert_called_once_with('s', 'lavar')
+        a.hide_keyboard.assert_called_once_with('s')
         a.e._adb.assert_not_called()
 
     def test_loop_runs_again_only_after_all_saved_and_keeps_busy(self):

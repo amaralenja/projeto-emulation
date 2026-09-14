@@ -104,6 +104,47 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(additional_capacity(9*GIB), 2)
         self.assertEqual(additional_capacity(27*GIB), 8)
 
+    def test_fixed_pair_ignores_conservative_auto_capacity_and_rotates(self):
+        a, targets, installed, active, calls, boot, shutdown, _ = self.setup_queue()
+        memory = lambda: (6 - len(active)*2)*GIB
+        run_queue(a, targets, Mock(), installed, 'task', True, False,
+                  lambda s: s in active, boot, shutdown, memory, simultaneous=2)
+        self.assertEqual(calls, [['p0', 'p1'], ['p2', 'p3'], ['p4']])
+
+    def test_fixed_pair_starts_even_below_memory_estimate(self):
+        a, targets, installed, active, calls, boot, shutdown, _ = self.setup_queue()
+        run_queue(a, targets, Mock(), installed, 'task', True, False,
+                  lambda s: s in active, boot, shutdown, lambda: GIB // 2, simultaneous=2)
+        self.assertEqual(calls, [['p0', 'p1'], ['p2', 'p3'], ['p4']])
+
+    def test_fixed_pair_never_starts_one_when_second_cannot_boot(self):
+        a, targets, installed, active, calls, boot, shutdown, _ = self.setup_queue()
+        def fail_second(name, serial, port):
+            if active:
+                raise RuntimeError('Falha ao abrir segundo celular')
+            boot(name, serial, port)
+        with self.assertRaisesRegex(RuntimeError, 'Falha ao abrir segundo celular'):
+            run_queue(a, targets, Mock(), installed, 'task', True, False,
+                      lambda s: s in active, fail_second, shutdown, lambda: GIB, simultaneous=2)
+        self.assertEqual(calls, [])
+        self.assertEqual(a.update.call_args.kwargs['busy'], False)
+
+    def test_fixed_pair_repeat_fills_odd_batch_with_eligible_phone(self):
+        a, targets, installed, active, calls, boot, shutdown, memory = self.setup_queue()
+        totals = {name: 0 for name in targets}
+        original = a._run_cycle
+        def save(batch, *args, **kwargs):
+            eligible_count = sum(seconds < 7200 for seconds in totals.values())
+            self.assertEqual(len(batch), min(2, eligible_count))
+            original(batch, *args, **kwargs)
+            for name in batch:
+                totals[name] += 3600
+        a._run_cycle = save
+        run_queue(a, targets, Mock(), installed, 'task', True, True,
+                  lambda s: s in active, boot, shutdown, memory,
+                  usage=lambda name: totals[name], simultaneous=2)
+        self.assertTrue(all(seconds == 7200 for seconds in totals.values()))
+
     def test_all_devices_once_and_saved_batches_close(self):
         data = self.setup_queue()
         self.execute(data)
