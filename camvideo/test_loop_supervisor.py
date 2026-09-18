@@ -3,7 +3,7 @@ import pathlib
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from loop_supervisor import LoopSupervisor, credit_history
 
 
@@ -55,3 +55,18 @@ class SupervisorTests(unittest.TestCase):
             s.e._adb.side_effect=RuntimeError('offline')
             with self.assertRaises(RuntimeError):s.recover()
             self.assertIn('s',s.state()['pending'])
+
+    def test_abandoned_capture_is_rescued_and_cleared(self):
+        with tempfile.TemporaryDirectory() as folder:
+            s=self.setup(folder)
+            s.checkpoint('serial',session='abc',task='t',phone='p',day='2026-09-13')
+            s.e._adb.return_value=Mock(stdout='device',returncode=0)
+            s.e._shell_root.return_value=Mock(stdout='',returncode=0)
+            s.e._shell_root_bytes.return_value=b'{}'
+            s.e._camera_pronta.return_value=None
+            with patch('loop_supervisor.recent_folders',return_value={'abc'}), \
+                 patch('loop_supervisor.recording_abandoned',return_value=True):
+                s.recover()
+            self.assertNotIn('serial',s.state()['pending'])
+            self.assertTrue(s.e._adb.call_args_list and any(
+                call.args[1]=='pull' for call in s.e._adb.call_args_list))

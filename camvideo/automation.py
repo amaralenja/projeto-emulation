@@ -39,6 +39,24 @@ def confirmed_recording_seconds(raw, session):
     return seconds if math.isfinite(seconds) and 0 < seconds <= MAX_SECONDS else None
 
 
+def recording_abandoned(raw, session):
+    """True when the Minute app ended the capture without accepting it. Such a
+    session can no longer be saved through the UI (no save button is offered),
+    so recovery must hand the video over to the host instead of retrying."""
+    session = re.sub(r'_\d+$', '', session)
+    decoder = json.JSONDecoder()
+    text = raw.decode('utf-8', 'replace')
+    for match in re.finditer(r'\{', text):
+        try:
+            obj, _ = decoder.raw_decode(text, match.start())
+        except ValueError:
+            continue
+        if (isinstance(obj, dict) and obj.get('sessionId') == session
+                and 'accepted' in obj):
+            return obj.get('accepted') is not True and obj.get('status') == 'ended'
+    return False
+
+
 def normalize(value):
     return ' '.join(''.join(c for c in unicodedata.normalize('NFD', value.casefold())
                             if not unicodedata.combining(c)).split())

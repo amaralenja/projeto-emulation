@@ -7,8 +7,11 @@ import sys
 import time
 import urllib.request
 
+from log_events import log as log_event
+
 
 def watch(path, pid, server):
+    log_event(os.path.join(os.environ.get('LOCALAPPDATA','.'),'emulation-cam'), 'watchdog_inicio', pid=pid)
     kernel=ctypes.windll.kernel32
     kernel.OpenProcess.restype=ctypes.c_void_p
     handle=kernel.OpenProcess(0x100001,False,pid)  # SYNCHRONIZE | TERMINATE
@@ -44,6 +47,8 @@ def watch(path, pid, server):
                 if not latest.get('enabled') or latest.get('ownerPid')!=pid:return
                 kernel.TerminateProcess(handle,1)
                 kernel.WaitForSingleObject(handle,15000)
+            log_event(os.path.join(os.environ.get('LOCALAPPDATA','.'),'emulation-cam'), 'watchdog_relancou',
+                      pid=pid, motivo='travado' if dead else 'sem progresso')
             subprocess.Popen([sys.executable,server,'--no-open','--supervisor-resume'],
                              cwd=os.path.dirname(server),creationflags=0x08000000)
             return

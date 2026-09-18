@@ -28,7 +28,7 @@ Windows e demais processos também consomem recursos. O lançamento atual usa GP
 de scripts e componentes testados; não copie somente um arquivo de configuração
 sobre um aparelho em execução.
 
-O pipeline atual prepara imagem em 1280 × 720, 30 fps. Essa é a configuração do
+O pipeline compartilhado atual prepara imagem em 640 × 360, 30 fps. Essa é a configuração do
 projeto, não uma especificação oficial de elegibilidade do Minute. Uma prévia
 visível sozinha não prova que a gravação começou: o sistema também verifica a
 sessão e o crescimento do arquivo. O áudio da voz/TikTok tem fluxo separado.

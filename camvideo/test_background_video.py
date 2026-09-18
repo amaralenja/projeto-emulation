@@ -10,6 +10,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import Mock
 import io
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
@@ -28,7 +29,7 @@ class BackgroundTests(unittest.TestCase):
                            urllib=urllib, json=json, shutil=shutil, VIDEOS=folder,
                            P=types.SimpleNamespace(EXTS=('.mp4',)),
                            LOCK=threading.Lock(), UPLOAD_LOCK=threading.Lock(),
-                           S=running, update=lambda **kw: running.update(kw))
+                           BACKGROUND_VIDEO=Mock(), S=running, update=lambda **kw: running.update(kw))
             exec(compile(ast.Module(body=[handler], type_ignores=[]), '<handler>', 'exec'), context)
             instance = object.__new__(context['H'])
             instance.path = '/api/upload'
@@ -43,20 +44,24 @@ class BackgroundTests(unittest.TestCase):
             self.assertEqual(running, {'busy': True, 'progress': 62, 'message': 'Gravando'})
             self.assertFalse(context['UPLOAD_LOCK'].locked())
 
-    def test_rejects_duplicate_job_and_keeps_errors_separate(self):
+    def test_queues_jobs_deduplicates_and_continues_after_error(self):
         gate = threading.Event()
-        def prepare(*args, **kwargs):
+        calls = []
+        def prepare(name, *args, **kwargs):
+            calls.append(name)
             gate.wait(2)
-            raise ValueError('conversion failed')
+            if name == 'test.mp4': raise ValueError('conversion failed')
         worker = BackgroundVideo(prepare)
         worker.start('test.mp4')
-        with self.assertRaises(ValueError):
-            worker.start('other.mp4')
+        worker.start('other.mp4')
+        worker.start('other.mp4')
         gate.set()
         deadline = time.monotonic() + 3
         while worker.snapshot()['busy'] and time.monotonic() < deadline:
             time.sleep(.01)
-        self.assertEqual(worker.snapshot()['error'], 'conversion failed')
+        self.assertEqual(calls, ['test.mp4', 'other.mp4'])
+        self.assertEqual(worker.snapshot()['results'][0]['error'], 'conversion failed')
+        self.assertEqual(worker.snapshot()['results'][1]['error'], '')
         self.assertFalse(worker.snapshot()['busy'])
 
     @unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg required')

@@ -12,7 +12,7 @@ from task_history import task_usage, daily_task_rows
 from daily_plan import DAILY_PLAN, run_daily_plan, continuous_daily_plan
 from interleaved_plan import validate_plan, run_interleaved_plan
 from minute_catalog import read_catalog, collect_catalog
-from loop_supervisor import LoopSupervisor
+from loop_supervisor import LoopSupervisor, recent_folders
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
@@ -21,6 +21,7 @@ from live_voice import LiveVoice
 from tiktok_live import TikTokLive
 from tiktok_video import TikTokVideo
 from panel_runtime import runtime_identity, find_running_backend
+from log_events import log as log_event
 
 HERE=os.path.dirname(os.path.abspath(__file__))
 FROZEN=bool(getattr(sys,"frozen",False)); RES=getattr(sys,"_MEIPASS",HERE)
@@ -78,6 +79,8 @@ def snap():
                          supervisorVersion=1,interleavedPlanVersion=1,minuteCatalog=read_catalog(os.path.join(AREA,'minute-catalog.json')))
 AUTOMATION=Automation(E,update)
 SUPERVISOR=LoopSupervisor(AREA,P.HISTORICO_TAREFAS,E,AUTOMATION,update)
+# Serials handled by the current sync run; reset_idle must never reclaim them.
+PLAN_SERIALS=set()
 
 
 def supervised_sync(options):
@@ -89,19 +92,45 @@ def supervised_sync(options):
         if status(serial)=='online':return
         match=next(((n,p) for n,(s,p) in devices().items() if s==serial),None)
         if match is None:raise RuntimeError('Celular pendente não está cadastrado: '+serial)
-        start_phone(match[0],serial,match[1])
+        start_phone(match[0],serial,match[1],allow_low_memory=options.get('simultaneous')==2)
         if not wait_open(serial,time.monotonic()+360):raise RuntimeError('Aguardando o celular pendente reiniciar: '+serial)
     SUPERVISOR.ensure_online=ensure_online
+    SUPERVISOR.device_serials=lambda:[s for _, (s, _) in devices().items()]
     if not FROZEN and (WATCHDOG is None or WATCHDOG.poll() is not None):
         WATCHDOG=subprocess.Popen([sys.executable,os.path.join(RES,'panel_watchdog.py'),SUPERVISOR.path,str(os.getpid()),
                                   os.path.join(RES,'modern_server.pyw')],**hidden())
     def reset_idle():
         for n,(serial,_) in devices().items():
             AUTOMATION.check_cancel()
-            if status(serial)!='online' or E._camera_pronta(serial) is not None:continue
+            if status(serial)!='online':continue
+            row=AUTOMATION.snapshot().get(serial,{})
+            # A phone that failed preparation with the camera not ready is
+            # restarted cleanly for the next supervision attempt instead of
+            # being retried in-place forever. Plan phones included: restarting
+            # a phone in 'Erro na preparação' never loses a pending capture.
+            if (row.get('stage')=='Erro na preparação'
+                    and not SUPERVISOR.state().get('pending')
+                    and row.get('error')=='A câmera da tarefa não está pronta'):
+                log_event(AREA, 'restart_por_preparacao_falha', serial=serial, motivo=row.get('error'))
+                E._adb(serial,'shell','am','force-stop','com.bakerdata.minute',timeout=15,check=True)
+                E._adb(serial,'emu','kill',timeout=10,check=True)
+                wait_for_shutdown(serial,E._adb,update)
+                continue
+            if serial in PLAN_SERIALS:continue
+            if E._camera_pronta(serial) is not None:
+                # Pronto precedes the capture checkpoint: a failed peer can leave an idle preview.
+                row=AUTOMATION.snapshot().get(serial,{})
+                if row.get('stage')!='Pronto' or SUPERVISOR.state().get('pending'):continue
+                AUTOMATION.task_list(serial)
+                if E._camera_pronta(serial) is not None:continue
             nodes=list(AUTOMATION.xml(serial).iter('node'))
             if any(x.get('resource-id') in {'record-accept','minute-save'} for x in nodes):continue
-            if any(x.get('resource-id') in {'nav-index','home-search-input','nav-minutes'} for x in nodes):
+            title=' '.join(x.get('text','') for x in nodes if x.get('resource-id')=='android:id/alertTitle').lower()
+            failed_preparation=AUTOMATION.snapshot().get(serial,{}).get('stage')=='Erro na preparação'
+            minute_anr=(failed_preparation and not SUPERVISOR.state().get('pending') and ('minute' in title or "process system isn't responding" in title or 'processo system' in title) and
+                        any(x.get('resource-id')=='android:id/aerr_close' for x in nodes) and
+                        any(x.get('resource-id')=='android:id/aerr_wait' for x in nodes))
+            if minute_anr or any(x.get('resource-id') in {'nav-index','home-search-input','nav-minutes'} for x in nodes):
                 E._adb(serial,'shell','am','force-stop','com.bakerdata.minute',timeout=15,check=True)
                 E._adb(serial,'emu','kill',timeout=10,check=True)
                 wait_for_shutdown(serial,E._adb,update)
@@ -170,19 +199,27 @@ def preview_source(path,meta):
     os.makedirs(THUMBS,exist_ok=True);st=os.stat(path);ident=hashlib.sha1((path+str(st.st_mtime_ns)).encode()).hexdigest();out=os.path.join(THUMBS,ident+".mp4")
     if os.path.isfile(out):return {"playback":"/preview?id="+ident,"previewReady":True}
     def convert():
-        tmp=os.path.join(THUMBS,ident+".building.mp4")
+        from preview_guard import preview_slot
+        tmp=os.path.join(THUMBS,ident+f".{os.getpid()}.building.mp4")
         try:
-            ff=P.achar("ffmpeg")
-            if ff:
-                r=subprocess.run([ff,"-y","-i",path,"-map","0:v:0","-vf","scale='min(1280,iw)':-2","-c:v","libx264","-preset","veryfast","-crf","27","-pix_fmt","yuv420p","-movflags","+faststart","-an",tmp],capture_output=True,timeout=3600,**hidden())
-                if r.returncode==0 and os.path.isfile(tmp):os.replace(tmp,out)
+            with preview_slot(THUMBS) as acquired:
+                if not acquired or os.path.isfile(out):return
+                # Camera preparation takes priority over optional browser previews.
+                if BACKGROUND_VIDEO.snapshot()['busy']:return
+                ff=P.achar("ffmpeg")
+                if ff:
+                    options=hidden()
+                    if os.name=='nt':options['creationflags']=options.get('creationflags',0)|subprocess.IDLE_PRIORITY_CLASS
+                    r=subprocess.run([ff,"-y","-v","error","-threads","1","-filter_threads","1","-i",path,"-map","0:v:0","-vf","scale='min(1280,iw)':-2","-c:v","libx264","-threads","1","-preset","veryfast","-crf","27","-pix_fmt","yuv420p","-movflags","+faststart","-an",tmp],capture_output=True,timeout=3600,**options)
+                    if r.returncode==0 and os.path.isfile(tmp):os.replace(tmp,out)
         finally:
             try:
                 if os.path.isfile(tmp):os.remove(tmp)
             except OSError:pass
             with PROXY_LOCK:PROXY_JOBS.discard(ident)
     with PROXY_LOCK:
-        if ident not in PROXY_JOBS:PROXY_JOBS.add(ident);threading.Thread(target=convert,daemon=True).start()
+        if not PROXY_JOBS and not BACKGROUND_VIDEO.snapshot()['busy']:
+            PROXY_JOBS.add(ident);threading.Thread(target=convert,daemon=True).start()
     return {"playback":"","previewReady":False}
 def selected_name():
     try:return json.load(open(SELECTED,"r",encoding="utf-8")).get("name","")
@@ -225,12 +262,12 @@ def payload():
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
     x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=2,dailyPlanVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
 
-def start_phone(n,s,p):
+def start_phone(n,s,p,allow_low_memory=False):
     if status(s)!="off":return
     class MemoryStatus(ctypes.Structure):
         _fields_=[("length",ctypes.c_ulong),("load",ctypes.c_ulong)]+[(k,ctypes.c_ulonglong) for k in ("total","available","pageTotal","pageAvailable","virtualTotal","virtualAvailable","extended")]
     memory=MemoryStatus();memory.length=ctypes.sizeof(memory)
-    if os.name=="nt" and ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) and memory.available<2300*1024**2:
+    if not allow_low_memory and os.name=="nt" and ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) and memory.available<2300*1024**2:
         raise RuntimeError(f"RAM insuficiente para ligar {n}: {memory.available/1024**3:.1f} GiB livres. Feche outro celular ou aplicativo antes de continuar.")
     exe=os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe")
     if not os.path.isfile(exe):
@@ -434,9 +471,11 @@ def sync(options=None):
     targets=devices()
     if options.get("scope")=="online":
         targets={n:(s,p) for n,(s,p) in targets.items() if status(s)=="online"}
+    global PLAN_SERIALS
+    PLAN_SERIALS = {s for _, (s, _) in targets.items()}
     def prepare(n,s,p):
         if status(s)!="online":
-            start_phone(n,s,p)
+            start_phone(n,s,p,allow_low_memory=options.get('simultaneous')==2)
             if not wait_open(s,time.monotonic()+360):raise RuntimeError(n+": não iniciou em 6 minutos")
         SHARED.activate_pending(n,s)
         if options.get("autoNavigate",True):
@@ -445,7 +484,7 @@ def sync(options=None):
             AUTOMATION.wait_minute_ready(s)
     if options.get('manageRam', options.get('scope') != 'online') and options.get('autoNavigate',True):
         def boot(n,s,p):
-            start_phone(n,s,p)
+            start_phone(n,s,p,allow_low_memory=options.get('simultaneous')==2)
             deadline=time.monotonic()+360
             while time.monotonic()<deadline:
                 AUTOMATION.check_cancel()
@@ -457,7 +496,13 @@ def sync(options=None):
         def shutdown(s):
             if AUTOMATION.snapshot().get(s,{}).get('stage') != 'Salvo':
                 if E._camera_pronta(s) is not None:
-                    raise RuntimeError('Encerre e salve a câmera aberta em '+s+' antes de reorganizar a fila.')
+                    if (SUPERVISOR.state().get('pending') or any(
+                            f in recent_folders(E._shell_root, s, 720)
+                            for f in E._pastas_gravacao(s))):
+                        raise RuntimeError('Encerre e salve a câmera aberta em '+s+' antes de reorganizar a fila.')
+                    # Orphan native preview with no capture to lose: leave it.
+                    E._adb(s,'shell','input','keyevent','4',timeout=8,check=True)
+                    time.sleep(1)
                 if any(n.get('resource-id') in {'minute-save','record-accept'} for n in AUTOMATION.xml(s).iter('node')):
                     raise RuntimeError('Há uma gravação para salvar em '+s+'. A fila foi pausada.')
             E._adb(s,'shell','sync',timeout=90,check=True)
@@ -496,11 +541,20 @@ def sync(options=None):
                 if any(current.get(s,{}).get('assetId')!=expected for s,_ in eligible.values()):
                     raise RuntimeError('O vídeo correto não foi confirmado para '+video)
             def run_task(eligible,task):
-                run_queue(AUTOMATION,eligible,prepare,TRANSFERS.snapshot()['installedVideos'],task,True,not bool(interleaved),
-                          lambda s:status(s)=='online',boot,shutdown,
-                          usage=lambda n:AUTOMATION.task_usage(n,task),
-                          lifetime=lambda n:task_usage(E._ler_historico(),n,task),
-                          simultaneous=2,reset_controls=False)
+                try:
+                    run_queue(AUTOMATION,eligible,prepare,TRANSFERS.snapshot()['installedVideos'],task,True,not bool(interleaved),
+                              lambda s:status(s)=='online',boot,shutdown,
+                              usage=lambda n:AUTOMATION.task_usage(n,task),
+                              lifetime=lambda n:task_usage(E._ler_historico(),n,task),
+                              simultaneous=2,reset_controls=False)
+                except RuntimeError:
+                    rows=AUTOMATION.snapshot()
+                    missing=all(rows.get(serial,{}).get('stage')=='Erro na preparação' and
+                                rows.get(serial,{}).get('error','').startswith('Tarefa não encontrada:')
+                                for serial,_ in eligible.values())
+                    if interleaved and missing and not SUPERVISOR.state().get('pending'):
+                        return False
+                    raise
             try:
                 if interleaved:
                     return continuous_daily_plan(
@@ -585,6 +639,22 @@ class H(BaseHTTPRequestHandler):
     def log_message(self,*_):pass
     def sendj(self,x,c=200):
         b=json.dumps(x,ensure_ascii=False).encode();self.send_response(c);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
+    def send_logs(self):
+        q=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        requested=q.get("day",[""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}",requested):requested=datetime.date.today().isoformat()
+        path=os.path.join(AREA,"logs",requested+".log")
+        lines=[]
+        if os.path.isfile(path):
+            try:
+                with open(path,encoding="utf-8") as stream:
+                    for raw in stream:
+                        raw=raw.strip()
+                        if raw:
+                            try:lines.append(json.loads(raw))
+                            except ValueError:pass
+            except OSError:pass
+        return self.sendj({"day":requested,"lines":lines})
     def video_path(self):
         name=os.path.basename(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("name",[""])[0]);path=os.path.abspath(os.path.join(VIDEOS,name))
         return path if path.startswith(os.path.abspath(VIDEOS)+os.sep) and os.path.isfile(path) else None
@@ -623,6 +693,7 @@ class H(BaseHTTPRequestHandler):
             with LOCK:health=dict(busy=S['busy'],lastProgress=LAST_PROGRESS,waiting=S.get('planWaitingNextDay',False))
             return self.sendj(health)
         if path=="/api/state":return self.sendj(payload())
+        if path=="/api/logs":return self.send_logs(urlparse_query=self.path)
         if path=="/api/tiktok/state":return self.sendj(dict(TIKTOK_VIDEO.snapshot(),phones=TIKTOK_VIDEO.phones()))
         if path=="/api/voice/state":return self.sendj(dict(VOICE.snapshot(),live=LIVE_VOICE.snapshot()))
         if path=="/api/voice/audio":
@@ -714,7 +785,8 @@ class H(BaseHTTPRequestHandler):
                         if not background:update(progress=int((total-z)*100/total),message="Importando "+n)
                 os.replace(pending,os.path.join(VIDEOS,n))
                 if not background:update(busy=False,progress=100,message=n+" importado",stage="Concluido",level="ok")
-                return self.sendj({"ok":True,"name":n})
+                BACKGROUND_VIDEO.enqueue(n,self.headers.get("X-Fill")=="1")
+                return self.sendj({"ok":True,"name":n,"preparationQueued":True})
             except Exception as exc:
                 if os.path.isfile(pending):os.remove(pending)
                 if not background:update(busy=False,level="error",message=str(exc))

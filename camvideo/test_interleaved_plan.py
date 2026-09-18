@@ -22,6 +22,22 @@ class InterleavedTests(unittest.TestCase):
             self.assertEqual(events[i][2],events[i+1][2])
             self.assertLessEqual(len(events[i][2]),2)
 
+    def test_missing_task_skips_only_failed_pair_without_credit(self):
+        totals={}; seen=[]
+        def record(pair,task):
+            seen.append((tuple(pair),task))
+            if task=='A' and 'p1' in pair:return False
+            for n in pair:totals[n,task]=7200
+        update=Mock()
+        run_interleaved_plan([dict(task='A',video='a.mov'),dict(task='B',video='b.mov')],
+            {n:(n,1) for n in ['p1','p2','p3']},lambda n,t:totals.get((n,t),0),Mock(),Mock(),record,
+            Mock(),lambda:False,update,shuffle=lambda rows:None)
+        self.assertNotIn(('p1','A'),totals)
+        self.assertNotIn(('p2','A'),totals)
+        self.assertEqual(totals['p3','A'],7200)
+        self.assertEqual(sum(totals.get((n,'B'),0) for n in ['p1','p2','p3']),21600)
+        self.assertEqual(seen.count((('p1','p2'),'A')),1)
+
     def test_no_source_switch_after_save_failure(self):
         activate=Mock()
         with self.assertRaises(RuntimeError):

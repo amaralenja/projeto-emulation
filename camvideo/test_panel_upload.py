@@ -7,11 +7,15 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 panel=importlib.machinery.SourceFileLoader('panel_test',str(Path(__file__).with_name('modern_server.pyw'))).load_module()
 
 class UploadTests(unittest.TestCase):
     def setUp(self):
+        self.preparation=patch.object(panel,'BACKGROUND_VIDEO',Mock())
+        self.worker=self.preparation.start()
+        self.addCleanup(self.preparation.stop)
         self.directory=tempfile.TemporaryDirectory()
         panel.VIDEOS=self.directory.name
         panel.S.update(busy=False)
@@ -38,6 +42,7 @@ class UploadTests(unittest.TestCase):
         response=connection.getresponse();self.assertEqual(response.status,200)
         self.assertEqual(json.loads(response.read())['name'],'test.mp4');connection.close()
         self.assertEqual((Path(self.directory.name)/'test.mp4').read_bytes(),payload)
+        self.worker.enqueue.assert_called_once_with('test.mp4',False)
         self.assertEqual(panel.S['progress'],100);self.assertFalse(panel.S['busy'])
 
     def test_interrupted_upload_keeps_old_file_and_releases_busy(self):

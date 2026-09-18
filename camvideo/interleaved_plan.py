@@ -23,14 +23,15 @@ def run_interleaved_plan(rows, targets, usage, preflight, activate, record_pair,
                          check_cancel, stopped, update, shuffle=random.shuffle):
     rows = validate_plan(rows)
     for video in dict.fromkeys(row['video'] for row in rows): preflight(video)
+    unavailable = set()
     previous = None
     turn = 0
     while True:
         check_cancel()
         if stopped(): return
-        choices = [row for row in rows if any(7200-usage(n,row['task']) >= 90 for n in targets)]
+        choices = [row for row in rows if any((n,row['task']) not in unavailable and 7200-usage(n,row['task']) >= 90 for n in targets)]
         if not choices:
-            update(planCompleted=True, message='Limites diários do plano intercalado concluídos.')
+            update(planCompleted=True, message='Sem combinações disponíveis neste ciclo: limites concluídos ou tarefas não encontradas.')
             return
         shuffle(choices)
         if len(choices)>1 and choices[0]['task']==previous:
@@ -39,7 +40,7 @@ def run_interleaved_plan(rows, targets, usage, preflight, activate, record_pair,
             check_cancel()
             if stopped(): return
             task = row['task']
-            eligible = [n for n in targets if 7200-usage(n,task) >= 90]
+            eligible = [n for n in targets if (n,task) not in unavailable and 7200-usage(n,task) >= 90]
             eligible.sort(key=lambda n: (usage(n,task), n))
             pair = {n:targets[n] for n in eligible[:2]}
             if not pair: continue
@@ -50,5 +51,9 @@ def run_interleaved_plan(rows, targets, usage, preflight, activate, record_pair,
             check_cancel()
             if stopped(): return
             # This call must finish and confirm saving before changing the source.
-            record_pair(pair,task)
+            if record_pair(pair,task) is False:
+                unavailable.update((n,task) for n in pair)
+                update(planSkipped=[{'phone':n,'task':t} for n,t in sorted(unavailable)],
+                       message='Tarefa não encontrada neste par; seguindo o plano sem contar horas: '+task)
+                continue
             previous = task
