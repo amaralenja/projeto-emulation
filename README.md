@@ -1,6 +1,6 @@
 # Projeto Emulation
 
-## Versão atual: 2.3.33 — operação dos celulares
+## Versão atual: 2.3.34 — operação dos celulares
 
 **Leia primeiro o [padrão dos celulares e checklist de gravação](docs/padrao-celulares.md).**
 O guia explica a preparação de cada aparelho, como iniciar pelo painel,
@@ -15,6 +15,97 @@ Novidades desta atualização:
 - Rodadas com dois celulares, priorizando os que menos gravaram; o modo fixo tenta abrir o par mesmo com pouca RAM disponível.
 - Supervisor local: registro persistente das capturas, tentativa de recuperação, confirmação de salvamento e proteção contra contagem duplicada; processo auxiliar para reiniciar o servidor quando necessário.
 - Visão geral com filtros de período e estimativa de ganhos em reais.
+
+---
+
+## Correções da 2.3.34 — o que foi consertado para rodar sem parar
+
+Esta atualização ataca, na causa raiz, os dois travamentos que impediam a
+rodada de seguir sozinha (erros repetidos a cada 30s–120s sem progresso) e
+adiciona trilha persistente de tudo o que acontece.
+
+### 1. Captura abandonada pelo Minute é resgatada, não re-tentada para sempre
+
+Sintoma antigo: `O Minute não confirmou o retorno após salvar; confira o
+celular` repetido centenas de vezes. Ocorria quando o app **encerrava** a
+gravação (`status=ended`) mas **não aceitava** o envio (`accepted=false`) e já
+tinha fechado a tela de salvar — não havia botão para clicar, então o loop de
+recuperação nunca terminava.
+
+Correção em `automation.py` (`recording_abandoned`) e `loop_supervisor.py`
+(`resgatar`): ao detectar esse estado, o supervisor **copia o vídeo para o
+computador** em `%LOCALAPPDATA%\emulation-cam\resgates\<data>\<celular>-<sessao>\`,
+remove a pasta do aparelho, credita nada de forma indevida e **segue o plano**.
+Nenhuma captura é perdida nem bloqueia a rodada.
+
+### 2. Pasta antiga não é mais confundida com captura em andamento
+
+Sintoma antigo: uma pasta de gravação **antiga** (de dias atrás) era adotada
+como captura órfã, gerando o travamento `A tela de gravação não encerrou;
+confira o celular imediatamente` e bloqueando o `shutdown()` com `Encerre e
+salve a câmera aberta...`.
+
+Correção em `loop_supervisor.py` (`recent_folders`): só contam como captura em
+voo pastas tocadas **recentemente** (padrão 720 min para recuperação; adoção
+de órfãs usa 60 min). Resíduos antigos que o app já descartou são deixados de
+lado e o `shutdown()` usa a mesma janela, então a reorganização da fila não
+trava mais.
+
+### 3. Celular que falhou a preparação é reiniciado em vez de preso
+
+Sintoma antigo: `A câmera da tarefa não está pronta` deixava o celular em
+`Erro na preparação` para sempre, pois o `reset_idle` pulava os celulares do
+plano.
+
+Correção em `modern_server.pyw` (`reset_idle`): celular com erro de preparação
+de câmera **sem captura pendente** é reiniciado de forma limpa
+(`force-stop` do Minute + `emu kill`) antes do `if serial in PLAN_SERIALS`,
+sem risco de perder vídeo pendente.
+
+### 4. Logs persistentes — saber sempre o que ocorreu
+
+Novo `camvideo/log_events.py`: todo evento relevante é gravado em linhas JSON
+por dia em `%LOCALAPPDATA%\emulation-cam\logs\YYYY-MM-DD.log`, cobrindo
+supervisor (erro, tentativa, sucesso/falha), capturas (pendente, limpa,
+creditada, órfã adotada, descartada, expirada, abandonada), reinícios de
+preparação e do watchdog. Consulta pelo painel (`GET /api/logs?day=YYYY-MM-DD`)
+ou pelo script de apoio `ver_logs.py [DIA]`.
+
+### 5. Watchdog registra reinícios
+
+`panel_watchdog.py` loga `watchdog_inicio` e `watchdog_relancou` com o motivo,
+para sempre saber quando e por que o backend foi reiniciado.
+
+---
+
+## Como rodar 100% sem problemas — checklist operacional
+
+Estas são as condições reais para a rodada infinita não parar:
+
+1. **Disco livre é o recurso mais crítico.** Cada vídeo de tarefa é instalado
+   dentro de cada AVD (18–19 GB por celular). Com menos de ~20 GB livres no
+   SSD, os emuladores começam a dar ANR ("Pixel Launcher isn't responding"),
+   o Minute não abre a lista e a rodada falha. Monitore com
+   `Get-PSDrive C`. Libere espaço limpando `%LOCALAPPDATA%\emulation-cam\frame-cache`
+   (cache de quadros, é re-gerado) e AVDs aposentados
+   (`MinutePlay`, `2–8`, `11` — apague **somente** os que ficaram fora do plano
+   por conta banida; é permanente).
+2. **RAM do host.** O par simultâneo usa ~5,6 GB só de emuladores. Com menos
+   de ~4 GB livres o ADB estoura timeout de 8s e o salvamento falha. Feche
+   apps pesados (Steam, Discord, navegadores, IAs de desktop) antes de ligar a
+   rodada.
+3. **Conta banida trava o par inteiro.** Com o Minute assim, a lista de
+   tarefas nunca abre (`A lista do Minute não está visível; rolagem
+   interrompida`) e o supervisor falha a cada ciclo com o par preso nela. A
+   solução é aposentar o celular: adicione o nome do AVD (`MinutePlayNN`) em
+   `%LOCALAPPDATA%\emulation-cam\retired-emulators.json` e reinicie o backend.
+4. **O que fazer quando travar:** leia o log do dia
+   (`ver_logs.py`), identifique o evento repetido, aplique o caso apropriado
+   acima e reinicie o backend. Não deixe a rodada presa em retry por horas —
+   a causa quase sempre é disco, RAM ou conta banida.
+5. **Aposentar celular:** AVD continua no disco e pode voltar ao plano se a
+   conta for trocada; basta remover o nome do `retired-emulators.json` e
+   reiniciar.
 
 Abra pelo iniciador do projeto e use a versão atual indicada no painel. A porta
 local pode mudar quando já existe outro servidor aberto; não fixe uma porta antiga.
