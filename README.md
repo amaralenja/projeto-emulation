@@ -1,6 +1,12 @@
 # Projeto Emulation
 
-## Versão atual: 2.3.34 — operação dos celulares
+## Versão atual: 2.3.38 — vídeos por código
+
+Na aba **Vídeos**, publique o original e os quadros já preparados em uma pasta
+compartilhada e importe em outro PC pelo código `VC1-…`, sem converter novamente.
+O código identifica um pacote de arquivos; os vídeos não ficam hospedados no GitHub.
+Veja o [guia de vídeos por código](docs/videos-por-codigo.md), com configuração,
+formato do pacote e funcionamento do identificador.
 
 **Leia primeiro o [padrão dos celulares e checklist de gravação](docs/padrao-celulares.md).**
 O guia explica a preparação de cada aparelho, como iniciar pelo painel,
