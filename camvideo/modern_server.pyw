@@ -7,6 +7,8 @@ from mirror import TouchMirror
 from camera_transfer import Transfers
 from background_video import BackgroundVideo
 from video_codes import video_code, export_video, import_video
+from video_online import import_online
+from github_video import publish_video, published_code
 from automation import Automation
 from automation_queue import run_queue, capacity_snapshot, wait_for_shutdown
 from task_history import task_usage, daily_task_rows
@@ -253,6 +255,8 @@ def payload():
             meta=video_meta(q);cache=prepared_cache(q,False);crop_cache=prepared_cache(q,True)
             meta['videoCode']=video_code(cache['sha256'],False) if cache else None
             meta['croppedVideoCode']=video_code(crop_cache['sha256'],True) if crop_cache else None
+            meta['onlineVideoCode']=published_code(cache,AREA)
+            meta['croppedOnlineVideoCode']=published_code(crop_cache,AREA)
             vs.append({"name":n,"size":os.path.getsize(q),**meta,"media":"/media?name="+urllib.parse.quote(n),"thumb":"/api/thumb?name="+urllib.parse.quote(n),**preview_source(q,meta)})
     transfer_state=TRANSFERS.snapshot()
     installed=transfer_state["installedVideos"]
@@ -264,7 +268,7 @@ def payload():
         except (OSError,AttributeError):phone["storage"]="Desconhecido"
     known=[(installed[p["serial"]].get("name"),installed[p["serial"]].get("assetId")) if (installed.get(p["serial"],{}).get("confirmed") or installed.get(p["serial"],{}).get("staged")) else None for p in ps]
     common=known[0][0] if known and all(n and n==known[0] for n in known) else ""
-    x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,videoCodesVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=2,dailyPlanVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
+    x=snap(); x.update(backgroundVideo=BACKGROUND_VIDEO.snapshot(),backgroundVideoVersion=1,videoCodesVersion=1,videoCodesOnlineVersion=1,phones=ps,videos=vs,current=0,currentName=common,allVideoName=common,analytics=analytics(list(found)),mirror=MIRROR.state(),defaultStorageGiB=DEFAULT_STORAGE_GIB,apiVersion=4,sharedCameraVersion=1,automationVersion=5,queueVersion=2,dailyPlanVersion=1,capacity=capacity_snapshot(len(ps),sum(p['status']=='online' for p in ps)),automation=AUTOMATION.snapshot(),**transfer_state); return x
 
 def start_phone(n,s,p,allow_low_memory=False):
     if status(s)!="off":return
@@ -612,13 +616,27 @@ def action(d):
         E._adb(s,"emu","kill",timeout=8)
     elif a=="minute":open_minute(s)
     elif a=="control":video_control(s,d["control"])
-    elif a in {'video_code_export','video_code_import'}:
+    elif a in {'video_code_export','video_code_import','video_code_online_import','video_code_github_publish'}:
         root=str(d.get('folder','')).strip()
-        if not root or not os.path.isabs(root):raise ValueError('Informe uma pasta compartilhada com caminho absoluto')
+        if a in {'video_code_export','video_code_import'} and (not root or not os.path.isabs(root)):raise ValueError('Informe uma pasta compartilhada com caminho absoluto')
+        if a=='video_code_github_publish' and d.get('confirmPublic') is not True:raise ValueError('Confirme que deseja publicar o vídeo e seus quadros para download público')
         if BACKGROUND_VIDEO.snapshot()['busy']:raise ValueError('Aguarde a preparação terminar antes de transferir o pacote')
         def transfer_asset():
             update(stage='Transferindo pacote',message='Transferindo e verificando original e quadros; arquivos grandes podem demorar.',progress=0)
-            if a=='video_code_export':
+            if a=='video_code_github_publish':
+                name=str(d.get('video',''))
+                if not name or name!=os.path.basename(name):raise ValueError('Selecione um vídeo da biblioteca')
+                src=os.path.join(VIDEOS,name);cache=prepared_cache(src,bool(d.get('fill',False)))
+                if not cache:raise ValueError('Prepare este vídeo com o enquadramento selecionado primeiro')
+                code=publish_video(src,cache,str(d.get('repository','')).strip(),AREA,HERE,
+                    lambda message,percent:update(stage='Publicando no GitHub',progress=round(percent,1),message=message))
+                update(busy=False,progress=100,stage='Publicado online',message='Vídeo disponível pela internet. Copie o código online.',onlineVideoCodeResult=code)
+            elif a=='video_code_online_import':
+                def online_progress(done,total):
+                    update(stage='Baixando pacote online',progress=round(done/total*95,1),message=f'Baixando e verificando: {done/1024**3:.2f} / {total/1024**3:.2f} GiB. Partes completas são retomadas em caso de falha.')
+                name=import_online(str(d.get('code','')).strip(),VIDEOS,AREA,cache_metadata_path,online_progress)
+                update(busy=False,progress=100,stage='Pacote importado',message=name+' baixado pela internet e preparado para câmera.')
+            elif a=='video_code_export':
                 name=str(d.get('video',''))
                 if not name or name!=os.path.basename(name):raise ValueError('Selecione um vídeo da biblioteca')
                 src=os.path.join(VIDEOS,name);cache=prepared_cache(src,bool(d.get('fill',False)))

@@ -1,10 +1,12 @@
 # Projeto Emulation
 
-## Versão atual: 2.3.38 — vídeos por código
+## Versão atual: 2.3.39 — download de vídeos pela internet
 
-Na aba **Vídeos**, publique o original e os quadros já preparados em uma pasta
-compartilhada e importe em outro PC pelo código `VC1-…`, sem converter novamente.
-O código identifica um pacote de arquivos; os vídeos não ficam hospedados no GitHub.
+Na aba **Vídeos**, publique o original e os quadros preparados nos **GitHub Releases**
+e importe em outro PC pelo código online `VC2.…`, sem converter novamente ou acessar
+o computador de origem. A publicação exige confirmação: os arquivos ficam públicos.
+O código só é liberado depois de o envio ser concluído. A opção antiga de pasta
+compartilhada, com código `VC1-…`, continua disponível.
 Veja o [guia de vídeos por código](docs/videos-por-codigo.md), com configuração,
 formato do pacote e funcionamento do identificador.
 

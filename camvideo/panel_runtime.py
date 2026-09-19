@@ -5,9 +5,9 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = '2.3.38'
+APP_VERSION = '2.3.39'
 
-BACKEND_FILES = ('video_codes.py', 'preview_guard.py', 'daily_plan.py', 'background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
+BACKEND_FILES = ('github_video.py', 'video_online.py', 'video_codes.py', 'preview_guard.py', 'daily_plan.py', 'background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
                  'shared_camera.py', 'mirror.py', 'storage.py', 'voice_manager.py',
                  'voice_worker.py', 'tiktok_live.py', 'tiktok_video.py', 'tiktok_video_worker.py', 'droidcam_output.py', 'panel_runtime.py', 'product_writer.py', 'live_voice.py')
 
