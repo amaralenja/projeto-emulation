@@ -69,6 +69,9 @@ def publish_video(source, cache, repository, area, repo_directory, progress=lamb
                   client=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise ValueError('Informe o repositório como dono/nome')
+    source=Path(source)
+    if source.stat().st_size!=cache['sourceSize'] or source.stat().st_mtime_ns!=cache['sourceMtime']:
+        raise ValueError('Original alterado; prepare novamente')
     client = client or GitHub(github_token(repo_directory))
     api = 'https://api.github.com/repos/' + repository
     repo = client.request('GET', api)
@@ -84,7 +87,7 @@ def publish_video(source, cache, repository, area, repo_directory, progress=lamb
         progress('Preparando partes para publicação; o tempo depende do tamanho do vídeo.', 0)
         temporary = Path(tempfile.mkdtemp(prefix='building-', dir=parent))
         try:
-            build_bundle(source, cache, temporary / 'bundle', manifest_url)
+            build_bundle(source, cache, temporary / 'bundle', manifest_url, store_parts=False)
             (temporary / 'bundle').rename(bundle)
         finally:
             shutil.rmtree(temporary)
@@ -94,10 +97,12 @@ def publish_video(source, cache, repository, area, repo_directory, progress=lamb
                        sha256=digest(bundle / 'manifest.json')))
     if len(assets) > 1000:
         raise ValueError('Pacote ultrapassa 1000 partes; use outro armazenamento')
-    for asset in assets:
-        path = bundle / asset['name']
-        if path.stat().st_size != asset['size'] or digest(path) != asset['sha256']:
-            raise ValueError('Pacote local alterado; não será publicado')
+    locations={}
+    for label, path in [('original', source), ('frames.i420', Path(cache['rawPath']))]:
+        offset=0
+        for part in manifest['files'][label]:
+            locations[part['name']]=(path,offset)
+            offset+=part['size']
     release = None
     for page in range(1, 101):
         releases = client.request('GET', api + f'/releases?per_page=100&page={page}')
@@ -125,8 +130,30 @@ def publish_video(source, cache, repository, area, repo_directory, progress=lamb
                 raise ValueError('Release publicado contém uma parte diferente; não será sobrescrito')
             client.request('DELETE', api + f'/releases/assets/{old["id"]}')
         upload_url = release['upload_url'].split('{', 1)[0] + '?name=' + urllib.parse.quote(asset['name'])
-        uploaded = client.request('POST', upload_url, file=bundle / asset['name'],
-            progress=lambda amount: progress('Enviando ' + asset['name'], (done + amount) / total * 99))
+        path=bundle/asset['name'];temporary_part=None
+        if not path.exists():
+            if shutil.disk_usage(bundle).free<asset['size']+256*1024**2:
+                raise ValueError('Sem espaço temporário para uma parte do upload (até 1 GiB)')
+            temporary_part=bundle/(asset['name']+'.uploading')
+            source_path,offset=locations[asset['name']]
+            try:
+                with source_path.open('rb') as inp,temporary_part.open('wb') as out:
+                    inp.seek(offset);remaining=asset['size']
+                    while remaining:
+                        block=inp.read(min(remaining,8*1024**2))
+                        if not block:raise ValueError('Arquivo de origem incompleto')
+                        out.write(block);remaining-=len(block)
+                path=temporary_part
+            except BaseException:
+                temporary_part.unlink(missing_ok=True)
+                raise
+        try:
+            if path.stat().st_size!=asset['size'] or digest(path)!=asset['sha256']:
+                raise ValueError('Parte local alterada; não será publicada')
+            uploaded = client.request('POST', upload_url, file=path,
+                progress=lambda amount: progress('Enviando ' + asset['name'], (done + amount) / total * 99))
+        finally:
+            if temporary_part:temporary_part.unlink(missing_ok=True)
         if uploaded.get('digest') != 'sha256:' + asset['sha256'] or uploaded.get('size') != asset['size']:
             raise ValueError('GitHub não confirmou a integridade da parte; tente novamente')
         done += asset['size']

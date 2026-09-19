@@ -48,9 +48,11 @@ preserva o código online nos metadados locais para que possa ser copiado depois
 
 ### Espaço e limitações do fluxo online
 
-Publicar pela primeira vez exige uma cópia adicional do original e dos quadros
-para dividir o pacote. Essa cópia permanece em
-`%LOCALAPPDATA%\emulation-cam\online-publish` para permitir novas tentativas.
+Publicar usa uma parte temporária por vez, de até 1 GiB, além de 256 MiB de
+margem. Não duplica o original e todos os quadros. O manifesto e o código ficam
+em `%LOCALAPPDATA%\emulation-cam\online-publish`; as partes temporárias são
+removidas após cada tentativa de envio. Uma nova tentativa reaproveita os anexos
+já confirmados no GitHub e recria localmente só as partes que faltam.
 O receptor reserva aproximadamente duas vezes o tamanho total do pacote mais
 1 GiB para baixar, montar e importar; após uma importação bem-sucedida, remove
 o cache temporário de download. Um download interrompido permanece em

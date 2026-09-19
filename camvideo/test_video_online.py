@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.parse
 from unittest.mock import patch
 
 from video_codes import FRAME_BYTES, import_video
@@ -86,6 +87,8 @@ class OnlineTests(unittest.TestCase):
         self.assertEqual(client.events[-1], 'publish')
         self.assertEqual(published_code(self.cache, self.root / 'area'), code)
         self.assertEqual(len(client.assets), 3)
+        self.assertFalse(list((self.root/'area/online-publish').rglob('*.part')))
+        self.assertFalse(list((self.root/'area/online-publish').rglob('*.uploading')))
         client.events.clear()
         self.assertEqual(publish_video(self.source, self.cache, 'owner/repo', self.root / 'area', self.root, client=client), code)
         self.assertEqual(client.events, [])
@@ -106,7 +109,7 @@ class FakeGitHub:
         if file:
             if self.fail_upload: raise OSError('upload interrupted')
             path = Path(file)
-            asset = dict(name=path.name, size=path.stat().st_size, digest='sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(), state='uploaded')
+            asset = dict(name=urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['name'][0], size=path.stat().st_size, digest='sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(), state='uploaded')
             self.assets.append(asset); self.events.append('upload'); progress(asset['size'])
             return asset
         if method == 'POST':

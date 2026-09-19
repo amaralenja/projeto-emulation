@@ -1,5 +1,6 @@
 """Portable HTTPS video codes, hashed parts and resumable downloads."""
 import base64
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -43,7 +44,7 @@ def decode_code(code):
         raise ValueError('Código online inválido') from error
 
 
-def build_bundle(source, cache, destination, manifest_url, chunk_size=CHUNK_SIZE):
+def build_bundle(source, cache, destination, manifest_url, chunk_size=CHUNK_SIZE, store_parts=True):
     """Prepare upload assets. The caller must upload all files before sharing code."""
     https_url(manifest_url)
     if not 1 <= chunk_size <= CHUNK_SIZE:
@@ -57,7 +58,7 @@ def build_bundle(source, cache, destination, manifest_url, chunk_size=CHUNK_SIZE
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
     total = cache['sourceSize'] + cache['rawSize']
-    if shutil.disk_usage(destination).free < total + 256 * 1024 ** 2:
+    if shutil.disk_usage(destination).free < (total if store_parts else 0) + 256 * 1024 ** 2:
         raise ValueError('Sem espaço para o pacote online')
     manifest = dict(code=video_code(cache['sha256'], cache['fill']), profile=PROFILE,
                     name=source.name, fill=bool(cache['fill']), sourceSize=cache['sourceSize'],
@@ -73,10 +74,11 @@ def build_bundle(source, cache, destination, manifest_url, chunk_size=CHUNK_SIZE
                 filename = f'{label}.{len(parts):04d}.part'
                 part_hash = hashlib.sha256()
                 size = 0
-                with (destination / filename).open('xb') as output:
+                with ((destination / filename).open('xb') if store_parts else nullcontext(None)) as output:
                     data = first
                     while data:
-                        output.write(data); whole.update(data); part_hash.update(data)
+                        if output is not None: output.write(data)
+                        whole.update(data); part_hash.update(data)
                         size += len(data)
                         data = stream.read(min(chunk_size - size, 8 * 1024 ** 2))
                 parts.append(dict(name=filename, size=size, sha256=part_hash.hexdigest()))
