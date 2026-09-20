@@ -4,10 +4,23 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from loop_supervisor import LoopSupervisor, credit_history
+from loop_supervisor import LoopSupervisor, credit_history, blocking_recording_folders
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_saved_leftovers_do_not_block_idle_preview(self):
+        engine=Mock()
+        engine._ler_historico.return_value={'supervisorSessions':{'credited_0':{}}}
+        engine._shell_root_bytes.return_value=(b'{"sessionId":"saved","accepted":true,"status":"ended"}'
+            b'{"sessionId":"saved","id":"part","durationMs":120000,"status":"done"}')
+        with patch('loop_supervisor.recent_folders',return_value={'credited_0','saved_0','unfinished_0'}):
+            self.assertEqual(blocking_recording_folders(engine,'s'),{'unfinished_0'})
+
+    def test_inspection_failure_does_not_authorize_closing_phone(self):
+        engine=Mock();engine._shell_root_bytes.side_effect=OSError('connection reset')
+        with patch('loop_supervisor.recent_folders',return_value={'unknown_0'}):
+            with self.assertRaises(OSError):blocking_recording_folders(engine,'s')
+
     def test_atomic_credit_once_and_original_day(self):
         history={'dias':{'2026-09-13':{'p':{'old':{'nome':'Louça','segundos':6500}}}}}
         entry=dict(session='id',day='2026-09-13',phone='p',task='Louça')

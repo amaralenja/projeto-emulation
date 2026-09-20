@@ -32,6 +32,20 @@ def read_json(path, fallback):
     except (OSError,ValueError): return fallback
 
 
+def blocking_recording_folders(engine, serial, minutes=720):
+    """Saved sessions left on disk must not block an idle camera preview.
+
+    Unknown/unconfirmed sessions remain protected. Transport failures propagate
+    rather than being treated as proof that it is safe to close the phone.
+    """
+    folders=recent_folders(engine._shell_root,serial,minutes)
+    if not folders:return set()
+    raw=engine._shell_root_bytes(serial,'cat /data/user/0/com.bakerdata.minute/files/mmkv/recording-store',timeout=15)
+    ledger=engine._ler_historico().get('supervisorSessions',{})
+    return {session for session in folders if session not in ledger
+            and confirmed_recording_seconds(raw,session) is None}
+
+
 def write_json(path, value):
     with open(path+'.tmp','w',encoding='utf-8') as stream:
         json.dump(value,stream,ensure_ascii=False)
@@ -139,11 +153,11 @@ class LoopSupervisor:
             try:
                 if self.e._camera_pronta(serial) is None:
                     continue
-                if not recent_folders(self.e._shell_root, serial, 60):
+                if not blocking_recording_folders(self.e, serial, 60):
                     continue
                 self.ensure_online(serial)
                 if (self.e._camera_pronta(serial) is not None
-                        and recent_folders(self.e._shell_root, serial, 60)):
+                        and blocking_recording_folders(self.e, serial, 60)):
                     self.checkpoint(serial, task='')
                     log_event(self.area, 'captura_orfa_adotada', serial=serial)
             except Exception:

@@ -8,6 +8,23 @@ from automation import Automation, recording_duration, stop_deadline, normalize,
 
 
 class AutomationTests(unittest.TestCase):
+    def test_preparation_anr_restarts_only_minute(self):
+        for title, extra, expected in [("Minute isn't responding", '', True),
+                                        ("Chrome isn't responding", '', False),
+                                        ("Minute isn't responding", '<node resource-id="record-accept"/>', False)]:
+            with self.subTest(title=title, extra=extra):
+                e = self.engine(); a = Automation(e, Mock())
+                a.xml = Mock(return_value=ET.fromstring(
+                    '<hierarchy><node resource-id="android:id/alertTitle" text="' + title +
+                    '"/><node resource-id="android:id/aerr_close"/>'
+                    '<node resource-id="android:id/aerr_wait"/>' + extra + '</hierarchy>'))
+                self.assertEqual(a.restart_preparation_anr('s'), expected)
+                if expected:
+                    e._adb.assert_called_once_with('s', 'shell', 'am', 'force-stop',
+                                                  'com.bakerdata.minute', timeout=15, check=True)
+                else:
+                    e._adb.assert_not_called()
+
     def test_save_rechecks_camera_after_xml_read_exceeds_deadline(self):
         e = self.engine(); a = Automation(e, Mock())
         e._camera_pronta.side_effect = [1800, None]
@@ -282,6 +299,15 @@ class AutomationTests(unittest.TestCase):
         a, e = self.run_record(prepare=prepare)
         self.assertEqual(prepare.call_count, 2)
         self.assertEqual(a.snapshot()['s']['stage'], 'Salvo')
+        e._somar_uso_tarefa.assert_called_once()
+
+    def test_closed_connection_during_preparation_retries_without_duplicate_capture(self):
+        from http.client import RemoteDisconnected
+        prepare=Mock(side_effect=[RemoteDisconnected('Remote end closed connection without response'),None])
+        a,e=self.run_record(prepare=prepare)
+        self.assertEqual(prepare.call_count,2)
+        a.wait_preparation_connection.assert_called_once_with('s')
+        self.assertEqual(e._tocar_botao_gravacao.call_count,2)
         e._somar_uso_tarefa.assert_called_once()
 
     def test_disconnected_preparation_has_bounded_retries_and_never_records(self):

@@ -1,6 +1,15 @@
 # Projeto Emulation
 
-## Versão atual: 2.3.39 — download de vídeos pela internet
+## Versão atual: 2.3.40 — recuperação da preparação
+
+O supervisor agora verifica o aviso **Minute não está respondendo** também nos
+celulares do plano. Se a preparação falhou e não há captura pendente ou arquivo
+sem confirmação, encerra o aplicativo para a próxima tentativa reabri-lo.
+Sessões já confirmadas que permaneceram no armazenamento não bloqueiam uma
+prévia ociosa. Quedas transitórias de conexão têm novas tentativas somente na
+preparação, sem repetir comandos de gravação ou salvamento.
+
+### Vídeos pela internet
 
 Na aba **Vídeos**, publique o original e os quadros preparados nos **GitHub Releases**
 e importe em outro PC pelo código online `VC2.…`, sem converter novamente ou acessar

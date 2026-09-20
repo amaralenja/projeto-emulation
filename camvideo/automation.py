@@ -164,6 +164,20 @@ class Automation:
             raise RuntimeError('Botão fora da tela ou desabilitado')
         self.e._adb(serial, 'shell', 'input', 'tap', str((x1+x2)//2), str((y1+y2)//2), timeout=5, check=True)
 
+    def restart_preparation_anr(self, serial):
+        """Caller must establish that no unresolved capture exists first."""
+        nodes=list(self.xml(serial).iter('node'))
+        ids={node.get('resource-id') for node in nodes}
+        title=' '.join(node.get('text','') for node in nodes
+                       if node.get('resource-id')=='android:id/alertTitle').casefold()
+        if ('minute' not in title or not {'android:id/aerr_close','android:id/aerr_wait'}<=ids
+                or ids & {'record-accept','minute-save'}):
+            return False
+        self.check_cancel()
+        self.e._adb(serial,'shell','am','force-stop','com.bakerdata.minute',timeout=15,check=True)
+        self.mark(serial,stage='Reabrindo Minute após travamento',error='')
+        return True
+
     def rotate_left(self, serial):
         for attempt in range(4):
             self.check_cancel()
@@ -552,7 +566,7 @@ class Automation:
                     durations[s] = min(durations[s], remaining)
                 self.mark(s, stage='Pronto', total=durations[s], error='')
             except Exception as exc:
-                transient = re.search(r"device\s+['\"]?[^\n]*not found|device offline|device still authorizing|no devices/emulators found|ADB n[aã]o respondeu|timed out", str(exc), re.I)
+                transient = re.search(r"device\s+['\"]?[^\n]*not found|device offline|device still authorizing|no devices/emulators found|ADB n[aã]o respondeu|timed out|remote end closed connection|connection (?:reset|aborted)|broken pipe", str(exc), re.I)
                 # Only retry preparation: no recording button has been pressed.
                 # Never replay commands during capture or saving.
                 if transient and 'unauthorized' not in str(exc).lower() and attempt < 2:

@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-APP_VERSION = '2.3.39'
+APP_VERSION = '2.3.40'
 
 BACKEND_FILES = ('github_video.py', 'video_online.py', 'video_codes.py', 'preview_guard.py', 'daily_plan.py', 'background_video.py', 'modern_server.pyw', 'painel.pyw', 'automation.py', 'automation_queue.py', 'task_history.py', 'unicode_search.py', 'camera_transfer.py',
                  'shared_camera.py', 'mirror.py', 'storage.py', 'voice_manager.py',

@@ -15,7 +15,7 @@ from task_history import task_usage, daily_task_rows
 from daily_plan import DAILY_PLAN, run_daily_plan, continuous_daily_plan
 from interleaved_plan import validate_plan, run_interleaved_plan
 from minute_catalog import read_catalog, collect_catalog
-from loop_supervisor import LoopSupervisor, recent_folders
+from loop_supervisor import LoopSupervisor, recent_folders, blocking_recording_folders
 from shared_camera import SharedCamera
 from storage import clone_offline, finish_resize, DEFAULT_STORAGE_GIB
 from voice_manager import VoiceManager
@@ -118,6 +118,13 @@ def supervised_sync(options):
                 E._adb(serial,'shell','am','force-stop','com.bakerdata.minute',timeout=15,check=True)
                 E._adb(serial,'emu','kill',timeout=10,check=True)
                 wait_for_shutdown(serial,E._adb,update)
+                continue
+            if (row.get('stage')=='Erro na preparação'
+                    and serial not in SUPERVISOR.state().get('pending',{})
+                    and not blocking_recording_folders(E,serial)
+                    and AUTOMATION.restart_preparation_anr(serial)):
+                log_event(AREA,'restart_minute_anr_preparacao',serial=serial)
+                update(message='Minute não respondeu em '+serial+'; aplicativo encerrado para reabrir na próxima tentativa.')
                 continue
             if serial in PLAN_SERIALS:continue
             if E._camera_pronta(serial) is not None:
@@ -504,9 +511,8 @@ def sync(options=None):
         def shutdown(s):
             if AUTOMATION.snapshot().get(s,{}).get('stage') != 'Salvo':
                 if E._camera_pronta(s) is not None:
-                    if (SUPERVISOR.state().get('pending') or any(
-                            f in recent_folders(E._shell_root, s, 720)
-                            for f in E._pastas_gravacao(s))):
+                    if (s in SUPERVISOR.state().get('pending',{}) or
+                            blocking_recording_folders(E,s)):
                         raise RuntimeError('Encerre e salve a câmera aberta em '+s+' antes de reorganizar a fila.')
                     # Orphan native preview with no capture to lose: leave it.
                     E._adb(s,'shell','input','keyevent','4',timeout=8,check=True)
